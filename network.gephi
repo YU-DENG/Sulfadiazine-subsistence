@@ -1,0 +1,499 @@
+
+setwd("/media/public3/DY/ecological_association")
+source("https://github.com/cran/ggpmisc")
+devtools::install_github("https://github.com/cran/ggpmisc")
+install.packages("corrplot")
+library("ggplot2")
+library(corrplot)
+library("ggpubr")
+library("reshape2")
+devtools::install_github("https://github.com/skembel/picante")
+library("picante")
+####### d134 vs d231 vs d334 ######
+mag.net <- read.table("mag.net", header = TRUE,  sep = ",", row.names = 1)
+prevdf <- read.table("prevdf", header = TRUE,  sep = ",", row.names = 1)
+
+#
+mag.net.d134 <- mag.net[,c("SDZ_SK_d134","SDZ_SWH_d134","SDZ_YL_d134","SDZ_TP_d134","SDZ_ST_d134","SDZ_STL_d134")]
+mag.net.spearman.d134 <- psych::corr.test(t(mag.net.d134), method = "spearman", use="pairwise", adjust="fdr", alpha=0.05)
+
+#only consider MAG association with adjp < 0.05,  filtering on r value
+mag.net.spearman.r.d134 <- mag.net.spearman.d134$r
+mag.net.spearman.p.d134 <- mag.net.spearman.d134$p
+mag.net.spearman.r.d134[mag.net.spearman.p.d134 > 0.01|abs(mag.net.spearman.r.d134)<0.6] = 0
+
+write.csv(mag.net.spearman.r.d134, file = "mag.net.spearman.r.d134.csv")
+
+###### Gephi visulization
+mag.net.accum.ratio.d134 <- as.data.frame(rowSums(mag.net.d134))
+names(mag.net.accum.ratio.d134)[1] <- "accum.ratio.abund.d134sample"
+mag.net.accum.ratio.d134["Id"] <- row.names(mag.net.accum.ratio.d134)
+
+#from Gephi output
+mag.net.nodes.d134 <- read.table("nodes.csv", header = TRUE,  sep = ",")
+rownames(mag.net.nodes.d134) <-mag.net.nodes.d134$Id 
+mag.net.nodes.d134 <- merge(mag.net.nodes.d134, prevdf, by="row.names", all.x = TRUE)
+mag.net.nodes.d134$Row.names <- NULL
+mag.net.nodes.d134 <- merge(mag.net.nodes.d134, mag.net.accum.ratio.d134, by="Id")
+mag.net.nodes.d134$TotalAbundance <- NULL
+mag.net.nodes.d134$Label <- mag.net.nodes.d134$Family
+write.csv(mag.net.nodes.d134, file = "mag.net.nodes.d134.csv", row.names = FALSE)
+
+#add metadata for network edges
+mag.net.edges.d134 <- read.table("edges.csv", header = TRUE,  sep = ",")
+mag.net.edges.d134["spear.corr"] <- as.numeric(mag.net.edges.d134$Weight)
+mag.net.edges.d134$spear.corr[mag.net.edges.d134$spear.corr>0] <-"positive"
+mag.net.edges.d134$spear.corr[mag.net.edges.d134$spear.corr<0] <-"negative"
+mag.net.edges.d134$Weight <-abs(mag.net.edges.d134$Weight)
+write.csv(mag.net.edges.d134, file = "mag.net.edges.d134.csv", row.names = FALSE)
+
+
+#network for p__Actinobacteriota
+mag.net.Actinobacteriota.d134 <- subset(mag.net.nodes.d134, Phylum %in% c("p__Actinobacteriota"))[,"Id"]
+mag.net.edges.Actinobacteriota.d134.1 <- subset(mag.net.edges.d134, Source %in% mag.net.Actinobacteriota.d134)
+mag.net.edges.Actinobacteriota.d134.2 <- subset(mag.net.edges.d134, Target %in% mag.net.Actinobacteriota.d134)
+mag.net.edges.Actinobacteriota.d134 <- rbind(mag.net.edges.Actinobacteriota.d134.1, mag.net.edges.Actinobacteriota.d134.2)
+mag.net.edges.Actinobacteriota.d134$Weight <- abs(mag.net.edges.Actinobacteriota.d134$Weight)
+
+mag.net.nodes.Actinobacteriota.d134 <- unique(c(as.character(mag.net.edges.Actinobacteriota.d134$Source), 
+                                                as.character(mag.net.edges.Actinobacteriota.d134$Target)))
+mag.net.nodes.Actinobacteriota.d134 <- subset(mag.net.nodes.d134, Id %in% mag.net.nodes.Actinobacteriota.d134)
+
+write.csv(mag.net.nodes.Actinobacteriota.d134, file = "mag.net.nodes.Actinobacteriota.d134.csv", row.names = FALSE)
+write.csv(mag.net.edges.Actinobacteriota.d134, file = "mag.net.edges.Actinobacteriota.d134.csv", row.names = FALSE)
+
+###### positive vs negative #######
+mag.net <- read.table("mag.net", header = TRUE,  sep = ",", row.names = 1)
+prevdf <- read.table("prevdf", header = TRUE,  sep = ",", row.names = 1)
+
+mag.net.spearman <- psych::corr.test(t(mag.net), method = "spearman", use="pairwise", adjust="fdr", alpha=0.05)
+
+#only consider MAG association with adjp < 0.05,  filtering on r value
+mag.net.spearman.r <- mag.net.spearman$r
+mag.net.spearman.p <- mag.net.spearman$p
+mag.net.spearman.r[mag.net.spearman.p > 0.01|abs(mag.net.spearman.r)<0.6] = 0
+
+write.csv(mag.net.spearman.r, file = "mag.net.spearman.r.csv")
+
+###### Gephi visulization
+mag.net.accum.ratio <- as.data.frame(rowSums(mag.net))
+names(mag.net.accum.ratio)[1] <- "accum.ratio.abundsample"
+mag.net.accum.ratio["Id"] <- row.names(mag.net.accum.ratio)
+
+#from Gephi output
+mag.net.nodes <- read.table("nodes.csv", header = TRUE,  sep = ",")
+rownames(mag.net.nodes) <-mag.net.nodes$Id 
+mag.net.nodes <- merge(mag.net.nodes, prevdf, by="row.names", all.x = TRUE)
+mag.net.nodes$Row.names <- NULL
+mag.net.nodes <- merge(mag.net.nodes, mag.net.accum.ratio, by="Id")
+mag.net.nodes$TotalAbundance <- NULL
+mag.net.nodes$Label <- mag.net.nodes$Family
+
+#add metadata for network edges
+mag.net.edges <- read.table("edges.csv", header = TRUE,  sep = ",")
+mag.net.edges["spear.corr"] <- as.numeric(mag.net.edges$Weight)
+mag.net.edges$spear.corr[mag.net.edges$spear.corr>0] <-"positive"
+mag.net.edges$spear.corr[mag.net.edges$spear.corr<0] <-"negative"
+mag.net.edges$Weight <-abs(mag.net.edges$Weight)
+#delte self association
+mag.net.edges$spear.corr[mag.net.edges$Source==mag.net.edges$Target] <- "self"
+mag.net.edges <- subset(mag.net.edges,!spear.corr %in% c("self") )
+
+write.csv(mag.net.nodes, file = "mag.net.nodes.csv", row.names = FALSE)
+write.csv(mag.net.edges, file = "mag.net.edges.csv", row.names = FALSE)
+
+
+#positve
+mag.net.edges.po <- subset(mag.net.edges, spear.corr %in% c("positive"))
+mag.net.nodes.po <- subset(mag.net.nodes, Id %in% unique(c(as.character(mag.net.edges.po$Source), 
+                                                           as.character(mag.net.edges.po$Target))))
+write.csv(mag.net.nodes.po, file = "mag.net.nodes.po.csv", row.names = FALSE)
+write.csv(mag.net.edges.po, file = "mag.net.edges.po.csv", row.names = FALSE)
+
+#negative
+mag.net.edges.ne <- subset(mag.net.edges, spear.corr %in% c("negative"))
+mag.net.nodes.ne <- subset(mag.net.nodes, Id %in% unique(c(as.character(mag.net.edges.ne$Source), 
+                                                           as.character(mag.net.edges.ne$Target))))
+write.csv(mag.net.nodes.ne, file = "mag.net.nodes.ne.csv", row.names = FALSE)
+write.csv(mag.net.edges.ne, file = "mag.net.edges.ne.csv", row.names = FALSE)
+
+####### cluster accumulative abundance, association with variable mag bc4046ff#####
+
+CLUSTERcolor <- c("A"="#feb24cff","B"="#59b533ff","C"="#c73082ff","D"="#d94a51ff",
+                  "E"="#348ecfff","F"="#7dc9ffff", "G"="#c0c0c0ff")
+family.color <- c("f__A4b"="#5bb733ff","f__Burkholderiaceae"="#3592d4ff","f__Chitinophagaceae"="#bb7fe2ff","f__Micrococcaceae"="#e88b74ff","f__Nitrosomonadaceae"="#0037e5ff","f__Nitrospiraceae"="#9c9c9cff","f__Nocardioidaceae"="#feb24cff","f__Parachlamydiaceae"="#a01bf9ff",
+                  "f__Parvibaculaceae"="#000570ff","f__Pyrinomonadaceae"="#c73284ff","f__Saprospiraceae"="#bc4046ff","f__SM1A02"="#5bb73380","f__Sphingomonadaceae"="#3592d480","f__Verrucomicrobiaceae"="#bb7fe280","f__Xanthobacteraceae"="#e88b7480")
+
+
+mag.cluster <- read.table("20200110_used_nodes.csv", header = TRUE,  sep = ",", row.names = 1)
+mag.cluster <- merge(mag.cluster, mag.net, by="row.names", all.y = TRUE)
+mag.cluster <- na.omit(mag.cluster)
+
+### bar plot, community sturcure color by taxa vs by cluster ###
+mag.cluster.taxa <- mag.cluster[,c(1,8,12,13:30)]
+row.names(mag.cluster.taxa) <- mag.cluster.taxa$Row.names
+mag.cluster.taxa$Row.names <- NULL
+
+mag.cluster.taxa.melt <- melt(mag.cluster.taxa)
+mag.cluster.taxa.melt["STP"] <- colsplit(mag.cluster.taxa.melt$variable,"_",c("SA","STP","Time"))["STP"]
+mag.cluster.taxa.melt$STP <- paste(mag.cluster.taxa.melt$STP, "starting microbiome","")
+colnames(mag.cluster.taxa.melt)<-c("Family", "Module","Sample","Relative.abundance","STP")
+#
+theme_set(theme_bw())
+bar.STP <- ggplot(mag.cluster.taxa.melt, aes(Sample,Relative.abundance, fill=Family))+
+                  geom_bar(stat = "identity", position="stack")+
+                  scale_color_manual(values = family.color)+
+                  scale_fill_manual(values = family.color)+
+                  facet_wrap(~STP, scales="free_x", nrow = 1)+
+                  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5),
+                        panel.spacing = unit(0, "mm"),
+                        panel.grid = element_blank(),
+                        strip.background = element_blank(),
+                        legend.position="top")+
+                  xlab("")+
+                  ylab("Normalized relative abundace")+
+                  guides(fill=guide_legend(nrow=2,byrow=TRUE))
+
+bar.cluster <- ggplot(mag.cluster.taxa.melt, aes(Sample,Relative.abundance, fill=Module))+
+                      geom_bar(stat = "identity", position="stack")+
+                      scale_color_manual(values = CLUSTERcolor)+
+                      scale_fill_manual(values = CLUSTERcolor)+
+                      facet_wrap(~STP, scales="free_x", nrow = 1)+
+                      theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5),
+                            panel.spacing = unit(0, "mm"),
+                            panel.grid = element_blank(),
+                            strip.background = element_blank(),
+                            legend.position="top")+
+                      xlab("")+
+                      ylab("Normalized relative abundace")+
+                      guides(fill=guide_legend(nrow=1,byrow=TRUE))
+
+ggarrange(bar.STP, bar.cluster, labels = c("a","b"),nrow=2, ncol = 1)
+
+# bar plot, module separated by taxa
+taxa.in.cluster <- ggplot(mag.cluster.taxa.melt, aes(Sample,Relative.abundance, fill=Family))+
+                            geom_bar(stat = "identity", position="stack")+
+                            scale_color_manual(values = family.color)+
+                            scale_fill_manual(values = family.color)+
+                            facet_wrap(~Module, scales="free_x", nrow = 1)+
+                            theme(axis.text.x = element_blank(),
+                                  axis.ticks = element_blank(),
+                                  panel.spacing = unit(0, "mm"),
+                                  panel.grid = element_blank(),
+                                  strip.background = element_blank(),
+                                  legend.position="top")+
+                            xlab("Microbial communites stablized on sulfadiazine")+
+                            ylab("Accumulative relative abundance")+
+                            guides(fill=guide_legend(nrow=2,byrow=TRUE))
+
+### bar plot, module separated by SGB ###
+mag.cluster.num <- mag.cluster.taxa[,c(1:3)]
+mag.cluster.num[,3] <- "1"
+colnames(mag.cluster.num)[3] <- "SGB.number"
+row.names(mag.cluster.num) <- NULL
+mag.cluster.num$SGB.number <- as.numeric(mag.cluster.num$SGB.number)
+
+mag.cluster.num <- aggregate(mag.cluster.num$SGB.number, by=list(mag.cluster.num$family, mag.cluster.num$clsuter), sum)
+colnames(mag.cluster.num) <- c("Family", "Module","SGB.number")
+
+theme_set(theme_bw())
+SGB.number.in.cluster <-  ggplot(mag.cluster.num, aes(Family,SGB.number, fill=Family ))+
+                          geom_bar(stat = "identity")+
+                          scale_color_manual(values = family.color)+
+                          scale_fill_manual(values = family.color)+
+                          facet_wrap(~Module, scales="free_x", nrow = 1)+
+                          geom_hline(yintercept = 1, color='red')+
+                          theme(axis.text.x = element_blank(),
+                                axis.ticks = element_blank(),
+                                panel.spacing = unit(0, "mm"),
+                                panel.grid = element_blank(),
+                                strip.background = element_blank(),
+                                legend.position="top")+
+                          ylab("Number of SGB")+
+                          guides(fill=guide_legend(nrow=2,byrow=TRUE))
+
+ggarrange(taxa.in.cluster, SGB.number.in.cluster, labels = c("a","b"),
+          nrow=2, ncol = 1, common.legend = TRUE)
+
+####### regression: cluster variance ~ variable SGBs  ######
+
+variable.mag <- c("SDZ_TP_d334_metawrap_21","SDZ_ST_d334_CONCOCT_11","SDZ_ST_d231_metaBAT2_8","SDZ_TP_d334_MaxBin2_021","SDZ_SK_d334_MaxBin2_010","SDZ_ST_d334_CONCOCT_95","SDZ_STL_d334_CONCOCT_61","SDZ_SWH_d231_CONCOCT_90","SDZ_SWH_d231_metawrap_21","SDZ_TP_d334_MaxBin2_018")
+
+mag.cluster.corr.df <-  mag.cluster[,c(1,13:30)]
+row.names(mag.cluster.corr.df) <- mag.cluster.corr.df$Row.names
+mag.cluster.corr.df$Row.names <- NULL
+mag.cluster.corr.df <- t(mag.cluster.corr.df)
+
+temp <- mag.cluster[,c(12:30)]
+temp <- aggregate(temp[,-1],by=list(temp$clsuter),sum)
+row.names(temp) <- temp$Group.1
+temp$Group.1 <- NULL
+temp <- t(temp)
+
+mag.cluster.corr.df <- as.data.frame(cbind(mag.cluster.corr.df, temp))
+
+
+
+
+ggplot(mag.cluster.corr.df, aes(SDZ_TP_d334_MaxBin2_021,D))+
+  geom_point()+
+  geom_smooth(method='lm',formula=y~x)+
+  ggpmisc::stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "~~~")), 
+                        formula=y~x, parse = TRUE, size = 3)
+
+fit <- lm(D~SDZ_TP_d334_MaxBin2_021+SDZ_SWH_d231_metawrap_21, mag.cluster.corr.df)
+summary(fit)
+
+
+#name varialbe
+x <- subset(temp.3, !mag %in% variable.mag)
+x <- x[,c("modularity_class", "Label")]
+colnames(x) <-c("cluster","Label")
+
+y <- variable.mag.cluster[,c(1:2)]
+y$cluster <- paste("cluster", y$cluster)
+y$cluster <- gsub(" ","", y$cluster)
+
+z <- rbind(x,y)
+
+write.csv(z, file = "mag.cluster")
+
+
+#mag.influence.cluster, fitting with all mag in individual cluster
+cluster0.fit <- lm(cluster0~Top1_f__Saprospiraceae+Top3_f__Xanthobacteraceae+Top6_f__SM1A02+f__SM1A02.SDZ_ST_d134_MaxBin2_030+f__Burkholderiaceae.SDZ_STL_d334_CONCOCT_4+f__Xanthobacteraceae.SDZ_SWH_d812_ref2_metawrap_3+f__Chitinophagaceae.SDZ_SWH_d334_metawrap_8+f__Chitinophagaceae.SDZ_YL_d134_CONCOCT_74+f__Xanthobacteraceae.twoAP_SDZ_SWH_d23_ref2_metawrap_18+f__Xanthobacteraceae.SMZ_SZ_d166_ref1a_CONCOCT_91+f__Parachlamydiaceae.SDZ_YL_d231_metawrap_5+f__Chitinophagaceae.SDZ_ST_d134_CONCOCT_51+f__Saprospiraceae.SDZ_SWH_d0_CONCOCT_95, mag.influence.cluster)
+summary(cluster0.fit)
+
+
+
+
+#plot dot 20200108
+variable.mag.cluster.dot <- melt(variable.mag.cluster)
+# 45 comparisons
+#variable.mag.comp <- combn(unique(variable.mag.cluster.dot$Label), m=2)
+variable.mag.comp <- rbind(rep("Top1_f__Saprospiraceae", 10),
+                           unique(variable.mag.cluster$Label))
+variable.mag.cluster.list <- list()
+
+for (i in 1:ncol(variable.mag.comp)){
+  variable.mag.cluster.list[[i]] <- ggplot(subset(variable.mag.cluster.dot, Label %in% variable.mag.comp[,i]) , aes(variable,value,group=Label))+
+    geom_point(aes(color=Label))+
+    geom_line(aes(color=Label))+
+    theme(strip.text = element_text(size=6.5, face = "bold"),
+          axis.text.x = element_text(angle = 90),
+          legend.position = c(0.6, 0.8),
+          legend.background = element_blank(),
+          legend.title = element_blank())
+}
+variable.mag.cluster.p1 <- ggpubr::ggarrange(plotlist=variable.mag.cluster.list,
+                                              nrow=2, ncol=5)
+variable.mag.cluster.p1
+
+#variable mag relative abundance 20200108
+theme_set(theme_bw())
+ggplot(variable.mag.cluster.dot, aes(variable,value,group=Label))+
+  geom_point(aes(color=Label))+
+  geom_line(aes(color=Label))+
+  facet_wrap(~cluster, scales="free_x")+
+  #scale_color_manual(values = CLUSTERcolor)+
+  #scale_fill_manual(values = CLUSTERcolor)+
+  theme(strip.text = element_text(size=6.5, face = "bold"),
+        axis.text.x = element_text(angle = 90),
+        legend.position = c(0.6, 0.8),
+        legend.background = element_blank(),
+        legend.title = element_blank())
+
+
+####### growth rate ######
+#single mode
+path <- "/media/public3/DY/ecological_association/growth_rate"
+path <- file.path(path, list.files(path))
+
+growth.rate <- lapply(path, function(x)read.table(x, header=T))
+growth.rate <- Reduce(function(...) merge(..., all=TRUE), growth.rate)
+row.names(growth.rate) <- growth.rate$Sample
+growth.rate$Sample <- NULL
+names(growth.rate)[21] <- "SMZ_SZ_d166_ref1a_MaxBin2_002"
+
+#MAG label
+top20.label <- read.table(file="top20_fosmid.txt", header = TRUE, row.names = 1)
+growth.rate <- merge(t(growth.rate), top20.label, by="row.names")
+row.names(growth.rate) <- growth.rate$Label
+growth.rate[,c("Row.names","Label")] <- NULL
+growth.rate <- t(growth.rate)
+
+#calculate spearman correlation
+colnames(growth.rate)[21] <- "Isolate_top9_f__Micrococcaceae"
+growth.rate.spearman <- psych::corr.test(growth.rate, method = "spearman", use="pairwise", adjust="fdr", alpha=0.05)
+growth.rate.spearman.r <- growth.rate.spearman$r
+growth.rate.spearman.p <- growth.rate.spearman$p
+
+#plot correlation 
+growth.rate.MAGs <- c(as.character(top20.label[c(1:10), "Label"]), "Fosmid_f__Nocardioidaceae")
+growth.rate.MAGs[9] <- "Isolate_top9_f__Micrococcaceae"
+variable.MAGs <- c("Top1_f__Saprospiraceae","Top4_f__Pyrinomonadaceae","Top8_f__Nitrospiraceae",
+                   "Top10_f__Nocardioidaceae","Fosmid_f__Nocardioidaceae","Isolate_top9_f__Micrococcaceae")
+
+#only plot for competition, replace value>=0 with 1
+corrplot(growth.rate.spearman.r[growth.rate.MAGs,growth.rate.MAGs],order="hclust",tl.cex=0.8, type = "upper",
+         #p.mat = growth.rate.spearman.p, sig.level = .2,insig = "blank"
+)
+
+#single plot for competive exclusion based on grid value
+colnames(growth.rate.df)[21]<- "Isolate_top9_f__Micrococcaceae"
+
+colnames(growth.rate.df)
+ggplot(growth.rate.df, aes(Top1_f__Saprospiraceae,Isolate_top9_f__Micrococcaceae))+
+  geom_point()+
+  geom_hline(yintercept = 1.02, color='red')+
+  geom_vline(xintercept = 1.02, color='red')+
+  xlab("Growth rate index of Top1_f__Saprospiraceae")+
+  ylab("Growth rate index of\n Isolate_top9_f__Micrococcaceae")
+
+
+#mutli plots
+theme_set(theme_bw())
+growth.comp <- combn(x = unique(colnames(growth.rate.df[,c(1,2,6,7,8,13,15,18,19,20,21)])), m = 2)
+growth.comp.top8 <- growth.comp[,c(9,18,26,33,39,44,48,51,53,55)]
+
+growth.comp.p <- list()
+for (i in 1:ncol(growth.comp.top8)){
+  growth.comp.p[[i]]<- ggplot(growth.rate.df, aes_string(growth.comp.top8[1,i],growth.comp.top8[2,i]))+
+                        geom_point(size=3)+
+                        geom_hline(yintercept = 1.02, color='red')+
+                        geom_vline(xintercept = 1.02, color='red')
+  
+}
+ggpubr::ggarrange(growth.comp.p[[1]],	growth.comp.p[[2]],	growth.comp.p[[3]],	growth.comp.p[[4]],	growth.comp.p[[5]],	growth.comp.p[[6]],	growth.comp.p[[7]],	growth.comp.p[[8]],	growth.comp.p[[9]],	growth.comp.p[[10]],	growth.comp.p[[11]],	growth.comp.p[[12]],	growth.comp.p[[13]],	growth.comp.p[[14]],	growth.comp.p[[15]],	growth.comp.p[[16]],	growth.comp.p[[17]],	growth.comp.p[[18]],	growth.comp.p[[19]],	growth.comp.p[[20]],	growth.comp.p[[21]],	growth.comp.p[[22]],	growth.comp.p[[23]],	growth.comp.p[[24]],	growth.comp.p[[25]],	growth.comp.p[[26]],	growth.comp.p[[27]],	growth.comp.p[[28]],	growth.comp.p[[29]],	growth.comp.p[[30]],
+                  nrow=6, ncol=5)
+ggpubr::ggarrange(growth.comp.p[[31]],	growth.comp.p[[32]],	growth.comp.p[[33]],	growth.comp.p[[34]],	growth.comp.p[[35]],	growth.comp.p[[36]],	growth.comp.p[[37]],	growth.comp.p[[38]],	growth.comp.p[[39]],	growth.comp.p[[40]],	growth.comp.p[[41]],	growth.comp.p[[42]],	growth.comp.p[[43]],	growth.comp.p[[44]],	growth.comp.p[[45]],	growth.comp.p[[46]],	growth.comp.p[[47]],	growth.comp.p[[48]],	growth.comp.p[[49]],	growth.comp.p[[50]],	growth.comp.p[[51]],	growth.comp.p[[52]],	growth.comp.p[[53]],	growth.comp.p[[55]],	growth.comp.p[[55]],
+                  nrow=5, ncol=5)
+
+ggpubr::ggarrange(growth.comp.p[[1]],	growth.comp.p[[2]],	growth.comp.p[[3]],	growth.comp.p[[4]],	growth.comp.p[[5]],	growth.comp.p[[6]],	growth.comp.p[[7]],	growth.comp.p[[8]],	growth.comp.p[[9]],	growth.comp.p[[10]],
+nrow = 2, ncol = 5)
+
+#dot plot for relative abundance correlation 
+dot.df <- growth.rate.abund.df[,c(22:42)]
+colnames(dot.df)[21]<- "Isolate_top9_f__Micrococcaceae_abund"
+dot.df["Sample"] <- rownames(dot.df)
+dot.melt <- melt(dot.df)
+dot.melt["variable"] <- sub("_abund","",dot.melt$variable)
+
+dot.comp <- rbind(c(rep("Isolate_top9_f__Micrococcaceae",5),rep("Fosmid_f__Nocardioidaceae",5)),
+                  c(rep(c("Top1_f__Saprospiraceae","Top2_f__SM1A02","Top3_f__Xanthobacteraceae",
+                          "Top4_f__Pyrinomonadaceae","Top6_f__SM1A02"),2)))
+dot.list <- list()
+for (i in 1:ncol(dot.comp)){
+  dot.list[[i]] <- ggplot(subset(dot.melt, variable %in% dot.comp[,i]) , aes(Sample,value,group=variable))+
+    geom_point(aes(color=variable))+
+    geom_line(aes(color=variable))+
+    theme(strip.text = element_text(size=6.5, face = "bold"),
+          axis.text.x = element_text(angle = 90))
+}
+ggpubr::ggarrange(dot.list[[1]],	dot.list[[6]],
+                  nrow=2, ncol=1) 
+
+###dot correlation
+dot.corr.df <- dot.df[c("SDZ_SK_d231","SDZ_ST_d231","SDZ_STL_d231","SDZ_SWH_d231","SDZ_TP_d231","SDZ_YL_d231",
+  "SDZ_SK_d334","SDZ_ST_d334","SDZ_STL_d334","SDZ_SWH_d334","SDZ_TP_d334","SDZ_YL_d334"),-22]
+colnames(dot.corr.df) <- sub("_abund","", colnames(dot.corr.df))
+
+
+
+ggplot(subset(dot.melt, variable %in% dot.comp[,1]), aes(Sample,value, fill=variable))+
+  geom_bar(stat = "identity", position="fill")+
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))
+
+
+ggplot(dot.corr.df, aes(Fosmid_f__Nocardioidaceae,Isolate_top9_f__Micrococcaceae))+
+  geom_point()+
+  geom_smooth(method='lm',formula=y~x)+
+  ggpmisc::stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "~~~")), 
+                        formula=y~x, parse = TRUE, size = 3)
+
+
+
+#growth rate correlate with relative abundance
+growth.rate.abund.df <- subset(mag.net, rownames(mag.net) %in% rownames(top20.label))
+growth.rate.abund.df <- merge(growth.rate.abund.df, top20.label, by="row.names")
+growth.rate.abund.df$Row.names <- NULL
+growth.rate.abund.df$Label <- paste(growth.rate.abund.df$Label, "abund",sep="_")
+row.names(growth.rate.abund.df) <- growth.rate.abund.df$Label
+growth.rate.abund.df$Label <- NULL
+
+growth.rate.abund.df <- merge(growth.rate.df,t(growth.rate.abund.df), by="row.names")
+row.names(growth.rate.abund.df) <- growth.rate.abund.df$Row.names
+growth.rate.abund.df$Row.names <- NULL
+growth.rate.abund.df <- as.data.frame(growth.rate.abund.df)
+
+#plot
+theme_set(theme_bw())
+
+p9 <- ggplot(growth.rate.abund.df, aes(Top1_f__Saprospiraceae_abund,Top1_f__Saprospiraceae))+
+      geom_point()+
+      geom_smooth(method='lm',formula=y~x)+
+      ggpmisc::stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "~~~")), 
+                            formula=y~x, parse = TRUE, size = 3)
+    
+
+ggpubr::ggarrange(p1,p2,p3,
+                  p4,
+                  p5,p6,p7,p8,
+                  p9,
+                  nrow=3, ncol=3)
+
+#spearman between grid & relative abundace
+grid.abund.spearman.df <- growth.rate.abund.df[,c("Top9_f__Micrococcaceae","Top1_f__Saprospiraceae_abund","Top3_f__Xanthobacteraceae_abund","Top5_f__SM1A02_abund")]
+grid.abund.spearman <- psych::corr.test(grid.abund.spearman.df, method = "spearman", use="pairwise", adjust="fdr", alpha=0.05)
+View(grid.abund.spearman$r)
+View(grid.abund.spearman$p)
+
+
+### relative abundance correlation among variable MAGs
+variable.MAGs <- top20.label
+variable.MAGs["MAG"] <- rownames(variable.MAGs)
+variable.MAGs <- subset(variable.MAGs, MAG %in% 
+                          c("SDZ_TP_d334_metawrap_21","SDZ_ST_d334_CONCOCT_11","SDZ_ST_d231_metaBAT2_8","SDZ_TP_d334_MaxBin2_021","SDZ_SK_d334_MaxBin2_010","SDZ_ST_d334_CONCOCT_95","SDZ_STL_d334_CONCOCT_61","SDZ_SWH_d231_CONCOCT_90","SDZ_SWH_d231_metawrap_21","SDZ_TP_d231_metaBAT2_39","SDZ_TP_d334_MaxBin2_018"))
+row.names(variable.MAGs) <- NULL
+variable.MAGs$Label <- as.character(variable.MAGs$Label)
+variable.MAGs <- rbind(variable.MAGs, as.vector(c("Top29_f__SM1A02","SDZ_STL_d334_CONCOCT_61")))
+
+
+#abundance df, spearman correlation
+variable.MAGs.abund <- mag.net[variable.MAGs$MAG,]
+variable.MAGs.abund["MAG"] <- row.names(variable.MAGs.abund)
+variable.MAGs.abund <- merge(variable.MAGs.abund,variable.MAGs, by="MAG", all.y=TRUE )
+row.names(variable.MAGs.abund) <- variable.MAGs.abund$Label
+variable.MAGs.abund$MAG <- NULL
+variable.MAGs.abund$Label <- NULL
+variable.MAGs.abund<- t(variable.MAGs.abund)
+
+variable.MAGs.abund.spearman <- psych::corr.test(variable.MAGs.abund, method = "spearman", use="pairwise", adjust="fdr", alpha=0.05)
+variable.MAGs.abund.spearman.r <- variable.MAGs.abund.spearman$r
+corrplot(variable.MAGs.abund.spearman.r,order="hclust",tl.cex=0.8, type = "lower",)
+
+corrplot(variable.MAGs.abund.spearman.r,order="hclust",tl.cex=0.8, type = "upper",
+         #p.mat = growth.rate.spearman.p, sig.level = .2,insig = "blank"
+)
+
+
+#abundance df, linear correlation
+variable.MAGs.abund.df <- as.data.frame(variable.MAGs.abund)
+
+variable.MAGs.abund.comp <- combn(x = variable.MAGs$Label, m = 2)
+variable.MAGs.abund.comp.1 <- variable.MAGs.abund.comp[,c(1:25)]
+variable.MAGs.abund.comp.2 <- variable.MAGs.abund.comp[,c(26:55)]
+
+theme_set(theme_bw())
+variable.MAGs.abund.dot.list.2 <- list()
+for (i in 1:ncol(variable.MAGs.abund.comp.2)){
+  variable.MAGs.abund.dot.list.2[[i]] <- ggplot(variable.MAGs.abund.df, aes_string(variable.MAGs.abund.comp.2[1,i],variable.MAGs.abund.comp.2[2,i]))+
+                                        geom_point()+
+                                        geom_smooth(method='lm',formula=y~x)+
+                                        ggpmisc::stat_poly_eq(aes(label = paste(..eq.label.., ..rr.label.., sep = "~~~")), 
+                                                              formula=y~x, parse = TRUE, size = 3)
+  }
+
+
+ggarrange(plotlist=variable.MAGs.abund.dot.list.2, nrow=6, ncol=5)
+
+
