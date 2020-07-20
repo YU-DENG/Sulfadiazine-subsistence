@@ -1,0 +1,462 @@
+setwd("/media/public3/DY/16S")
+#install dada2
+install.packages("devtools")
+library("devtools")
+devtools::install_github("benjjneb/dada2", ref="v1.12")
+library("dada2"); packageVersion("dada2")
+install.packages("/media/DYDB/DECIPHER/DECIPHER_2.12.0.tar.gz", repos = NULL, type="source")
+library(DECIPHER); packageVersion("DECIPHER")
+source('http://bioconductor.org/biocLite.R')
+biocLite('phyloseq')
+library(phyloseq); packageVersion("phyloseq")
+library(Biostrings); packageVersion("Biostrings")
+library(ggplot2); packageVersion("ggplot2")
+library("reshape2")
+install.packages("gridExtra")
+library("gridExtra")
+library("vegan")
+install.packages("/media/DYDB/R/DESeq2_1.24.0.tar.gz", repos = NULL, type="source")
+library("DESeq2");packageVersion("DESeq2")
+install.packages("ggtern")
+library("ggtern")
+devtools::install_github('fawda123/ggord')
+library(ggord)
+
+
+
+#dada2########################
+path <- "/media/public3/DY/16S/0_clean_data"
+list.files(path)
+fnFs <- sort(list.files(path, pattern="_1.fq", full.names = TRUE))
+fnRs <- sort(list.files(path, pattern="_2.fq", full.names = TRUE))
+sample.names <- sapply(strsplit(basename(fnFs), "_"), `[`, 1)
+#plotQualityProfile(fnFs[1:2])
+#plotQualityProfile(fnRs[1:2])
+
+#Filter and trim
+filtFs <- file.path(path, "filtered", paste0(sample.names, "_F_filt.fastq"))
+filtRs <- file.path(path, "filtered", paste0(sample.names, "_R_filt.fastq"))
+names(filtFs) <- sample.names
+names(filtRs) <- sample.names
+
+out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen=c(290,205),
+                     maxN=0, maxEE=c(2,2), truncQ=2, rm.phix=TRUE,
+                     compress=TRUE, multithread=TRUE) 
+View(out)
+
+#Learn the Error Rates
+errF <- learnErrors(filtFs, multithread=TRUE)
+errR <- learnErrors(filtRs, multithread=TRUE)
+#Sample Inference
+dadaFs <- dada(filtFs, err=errF, multithread=TRUE)
+dadaRs <- dada(filtRs, err=errR, multithread=TRUE)
+
+#Merge paired reads
+mergers <- mergePairs(dadaFs, filtFs, dadaRs, filtRs, verbose=TRUE)
+
+#Construct sequence table
+seqtab <- makeSequenceTable(mergers)
+#dim(seqtab)
+#table(nchar(getSequences(seqtab)))
+
+#Remove chimeras
+seqtab.nochim <- removeBimeraDenovo(seqtab, method="consensus", multithread=TRUE, verbose=TRUE)
+dim(seqtab.nochim)
+      
+#Track reads through the pipeline
+getN <- function(x) sum(getUniques(x))
+track <- cbind(out, sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab.nochim))
+colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
+rownames(track) <- sample.names
+View(track)
+
+#Assign taxonomy-- naive Bayesian
+taxa <- assignTaxonomy(seqtab.nochim, 
+                       "/media/public3/DY/16S/assignTaxonomy_GTDB/GTDB_bac-arc_ssu_r86.fa.gz", 
+                       multithread=TRUE,tryRC=TRUE)
+#dim(taxa)
+taxa.print <- taxa
+rownames(taxa.print) <- NULL
+View(taxa.print)
+#number of assigned genus 4701/6809
+nrow(subset(taxa.print, is.na(taxa.print[,"Genus"])!=TRUE))
+
+#Assign taxonomy--IDTAXA########################
+#Assign taxonomy--IDTAXA
+dna <- DNAStringSet(getSequences(seqtab.nochim))
+load("/media/public3/DY/16S/IDTAXA_GTDB/GTDB_r86-mod_September2018.RData")
+ids <- IdTaxa(dna, trainingSet, strand="top", processors=NULL, verbose=FALSE)
+ranks <- c("domain", "phylum", "class", "order", "family", "genus", "species") 
+taxid <- t(sapply(ids, function(x) {
+  m <- match(ranks, x$rank)
+  taxa <- x$taxon[m]
+  taxa[startsWith(taxa, "unclassified_")] <- NA
+  taxa
+}))
+colnames(taxid) <- ranks; rownames(taxid) <- getSequences(seqtab.nochim)
+#number of assigned genus 1207/6809
+nrow(subset(taxid, is.na(taxid[,"genus"])!=TRUE))
+
+
+#phyloseq########################
+
+#sample data
+
+samdf <- read.table("/media/public3/DY/16S/2_phyloseq/sampledata.txt", header = TRUE,  row.names = 1, sep = "\t")
+
+#phyloseq import
+ps <- phyloseq(otu_table(seqtab.nochim, taxa_are_rows=FALSE), 
+               sample_data(samdf), 
+               tax_table(taxa))
+taxa_names(ps) <- paste0("ASV", seq(ntaxa(ps)))
+
+#filtering by taxa
+ps <- subset_taxa(ps, !is.na(Phylum)& Kingdom %in% c("Bacteria"))
+
+#filtering by sample prevanlence
+# Compute prevalence of each feature, store as data.frame
+prevdf = apply(X = otu_table(ps),
+               MARGIN = ifelse(taxa_are_rows(ps), yes = 1, no = 2),
+               FUN = function(x){sum(x > 0)})
+# Add taxonomy and total read counts to this data.frame
+prevdf = data.frame(Prevalence = prevdf,
+                    TotalAbundance = taxa_sums(ps),
+                    tax_table(ps))
+keepTaxa = rownames(prevdf)[(prevdf$Prevalence >= 2)]
+ps = prune_taxa(keepTaxa, ps)
+
+#filteriny by rare phylum
+prevdf <- subset(prevdf, prevdf$Prevalence >= 2)
+ggplot(prevdf, aes(TotalAbundance, Prevalence /12,color=Phylum)) +
+  geom_hline(yintercept = 0.1, alpha = 0.5, linetype = 2) +  geom_point(size = 2, alpha = 0.7) +
+  scale_x_log10() +  xlab("Total Abundance") + ylab("Prevalence [Frac. Samples]") +
+  facet_wrap(~Phylum) + theme(legend.position="none")
+
+# Define phyla to filter (phylum with < 10 feature sequence was filtered)
+filterPhyla = c("Armatimonadota","Bdellovibrionota", "Campylobacterota","Deinococcota","Dependentiae","Desulfobacterota","Desulfuromonadota","Elusimicrobiota","Firmicutes","Firmicutes_C","Fusobacteriota","Gemmatimonadota")
+# Filter entries with unidentified Phylum.
+ps = subset_taxa(ps, !Phylum %in% filterPhyla)
+
+
+
+#Plot compostion########################
+OTU.df <- merge(prevdf,t(get_taxa(ps)), by="row.names",all.x=TRUE)
+names(OTU.df)[1] <- "ASV"
+
+#Plot1
+prevdf <- subset(prevdf, !Phylum %in% filterPhyla)
+ggplot(prevdf, aes(TotalAbundance, Prevalence /12,color=Phylum)) +
+  geom_hline(yintercept = 0.1, alpha = 0.5, linetype = 2) +  geom_point(size = 2, alpha = 0.7) +
+  scale_x_log10() +  xlab("Total Abundance") + ylab("Prevalence [Frac. Samples]") +
+  facet_wrap(~Phylum) + theme(legend.position="none")
+
+#Plot2: diversity
+STPcolor <- c("#000570","#f46d43","#695400","#3592d4","#feb24c","#c73284")
+plot_richness(ps, x="Time", measures=c("Shannon", "Simpson"), color="STP",shape="Time")+
+  geom_point(size=5, alpha=0.6)+
+  scale_color_manual(values = STPcolor)
+
+#Plot3: ordination
+# Transform data to proportions as appropriate for Bray-Curtis distances
+ps.prop <- transform_sample_counts(ps, function(x) x/sum(x))
+ord.pcoa.bray <- ordinate(ps.prop, method="PCoA", distance="bray")
+plot_ordination(ps.prop, ord.pcoa.bray, color="STP", shape="Time", 
+                title="PCoA on Bray-Curtis distance of ASVs abundance (proportion)")+
+  geom_point(size=5, alpha=0.6)+
+  scale_color_manual(values = STPcolor)
+
+
+#Plot4: composition-top 20 ASVs
+theme_set(theme_bw())
+ps.d0 <- subset_samples(ps, Time %in% c("d0"))
+d0.top20 <- names(sort(taxa_sums(ps.d0), decreasing=TRUE))[1:20]
+ps.d0.top20 <- transform_sample_counts(ps.d0, function(x) x/sum(x))
+ps.d0.top20 <- prune_taxa(d0.top20, ps.d0.top20)
+
+p0 <- plot_bar(ps.d0.top20, x="STP", fill="Family")+
+  geom_bar(aes(color=Family, fill=Family), stat="identity", position="stack")+
+  ggtitle("Top 20 ASVs at d0")+theme(legend.position="bottom",legend.text=element_text(size=12, face = "bold"),axis.text = element_text(size = 16),axis.title =element_text(size = 16, face = "bold"),plot.title = element_text(size = 18, face = "bold"))+
+  guides(fill=guide_legend(ncol=3))+
+  scale_fill_manual(values = c("BACL12" = "#ff9100ff", "Nitrospiraceae" = "#feb24cff", "Roseiflexaceae" = "#e88b74ff", "Saprospiraceae" = "#bc4046ff"),na.value = "#9c9c9cff")+
+  scale_color_manual(values = c("BACL12" = "#ff9100ff", "Nitrospiraceae" = "#feb24cff", "Roseiflexaceae" = "#e88b74ff", "Saprospiraceae" = "#bc4046ff"), na.value = "#9c9c9cff")
+
+
+ps.d334 <- subset_samples(ps, Time %in% c("d334"))
+d334.top20 <- names(sort(taxa_sums(ps.d334), decreasing=TRUE))[1:20]
+ps.d334.top20 <- transform_sample_counts(ps.d334, function(x) x/sum(x))
+ps.d334.top20 <- prune_taxa(d334.top20, ps.d334.top20)
+
+p334 <- plot_bar(ps.d334.top20, x="STP", fill="Family")+
+  geom_bar(aes(color=Family, fill=Family), stat="identity", position="stack")+
+  ggtitle("Top 20 ASVs at d334") +theme(legend.position="bottom",legend.text=element_text(size=12, face = "bold"),axis.text = element_text(size = 16),axis.title =element_text(size = 16, face = "bold"),plot.title = element_text(size = 18, face = "bold"))+
+  scale_fill_manual(values = c("Micrococcaceae" = "#3592d4ff", "Nitrospiraceae" = "#feb24cff", "Saprospiraceae" = "#bc4046ff"))+
+  scale_color_manual(values = c("Micrococcaceae" = "#3592d4ff", "Nitrospiraceae" = "#feb24cff", "Saprospiraceae" = "#bc4046ff")) 
+
+grid.arrange(p0, p334, nrow=1)
+
+#Plot4: composition-top 300 ASVs
+theme_set(theme_bw())
+plot_heatmap(ps.prop,sample.label = "Sample",sample.order="Time",
+             low="#FFFFCC", high="#000033", na.value="white")+
+  ggtitle("NMDS on Bray-Curtis distance of tatal ASVs abundance (proportion)")
+
+#Plot5: bar.plot 
+barplot.df <- OTU.df[,c(1,11:22)]
+barplot.melt <- melt(barplot.df)
+colnames(barplot.melt)[1] <- "ASV" 
+colnames(barplot.melt)[2] <- "sample"
+barplot.taxa <- OTU.df[,c(1,4:10)]
+colnames(barplot.taxa)[1] <- "ASV"
+barplot.samdf <- samdf
+barplot.samdf[""] <- row.names(barplot.samdf)
+rownames(barplot.samdf) <- NULL
+
+barplot.melt <- merge(barplot.melt, barplot.taxa, by="ASV", all.x = TRUE)
+barplot.melt <- merge(barplot.melt, barplot.samdf, by="sample", all.x = TRUE)
+
+addLevel <- function(x, newlevel=NULL) {
+  if(is.factor(x)) {
+    if (is.na(match(newlevel, levels(x))))
+      return(factor(x, levels=c(levels(x), newlevel)))
+  }
+  return(x)
+}
+
+barplot.melt$Species <- addLevel(barplot.melt$Species, "not_assigned")
+barplot.melt$Genus<- addLevel(barplot.melt$Genus, "not_assigned")
+barplot.melt$Family<- addLevel(barplot.melt$Family, "not_assigned")
+barplot.melt$Order<- addLevel(barplot.melt$Order, "not_assigned")
+barplot.melt$Class<- addLevel(barplot.melt$Class, "not_assigned")
+barplot.melt$Phylum<- addLevel(barplot.melt$Phylum, "not_assigned")
+
+barplot.melt [is.na(barplot.melt)] <- "not_assigned"
+
+#plot family barplot
+family.color <- barplot.melt
+family.color <- aggregate(family.color$value, by=list(family.color$Family), sum)
+family.color <- setNames(family.color$x,family.color$Group.1)
+
+family.color.top20 <- names(sort(family.color, decreasing = TRUE))[1:20]
+
+barplot.melt.family <- barplot.melt
+barplot.melt.family$Family <- as.character(barplot.melt.family$Family)
+barplot.melt.family$Family[!barplot.melt.family$Family %in% family.color.top20] <- "f__others"
+
+bar.color <- c("#5bb733ff","#3592d4ff","#bb7fe2ff","#e88b74ff","#0037e5ff",
+               "#9c9c9cff","#feb24cff","#a01bf9ff","#000570ff","#bc4046ff","#c73284ff",
+                 alpha("#5bb733ff", 0.5),alpha("#3592d4ff", 0.5), alpha("#bb7fe2ff", 0.5), alpha("#e88b74ff", 0.5), alpha("#0037e5ff", 0.5),
+                 alpha("#feb24cff", 0.5),alpha("#a01bf9ff", 0.5),alpha("#000570ff", 0.5),alpha("#bc4046ff", 0.5),alpha("#c73284ff", 0.5)
+                )
+
+Time <- c("d0","d334")
+p.bar <- list()
+for (i in Time) {
+  idf <- data.frame()
+  idf <- subset(barplot.melt.family, Time==i)
+  p.bar[[i]] <- ggplot(idf, aes(x=STP, y=value, fill=Family))+
+    geom_bar(stat = "identity", position = "fill")+
+    # scale_x_discrete(limits=sampleID)+
+    scale_fill_manual(values = bar.color)+
+    theme_set(theme_bw())+
+    theme(legend.position = "top")+
+    labs(y = "Relative abundance")+
+    labs(x = i) +
+    guides(fill=guide_legend(nrow=3,byrow=TRUE))
+}
+ggpubr::ggarrange(p.bar[["d0"]], p.bar[["d334"]],
+                  labels = c("a","b"),
+                  ncol=2,common.legend = TRUE, legend = "top", align = "hv")
+
+#ternary plot########################
+ternary.df <- ps.prop.adonis[,c(6,9:20)]
+ternary.df$Family <- as.character(ternary.df$Family)
+ternary.df[is.na(ternary.df) ==TRUE] <- "not_assigned"
+ternary.df <- aggregate(ternary.df[,c(2:13)], by=list(ternary.df$Family), sum)
+
+ternary.df.1 <- ternary.df
+ternary.df.1$Group.1 <- as.character(ternary.df.1$Group.1)
+ternary.df.1$Group.1[!ternary.df.1$Group.1 %in% c("Nitrospiraceae","Micrococcaceae","Saprospiraceae")] <- "Other_families"
+ternary.df.1 <- aggregate(ternary.df.1[,-1], by=list(ternary.df.1$Group.1), sum)
+row.names(ternary.df.1) <- ternary.df.1$Group.1
+ternary.df.1$Group.1 <- NULL
+ternary.df.1 <- merge(t(ternary.df.1), samdf[,c("STP","Time")], by="row.names",all.x=TRUE)
+row.names(ternary.df.1) <- ternary.df.1$Row.names
+ternary.df.1$Row.names <- NULL
+
+ggtern(data = ternary.df.1, aes(x = Micrococcaceae, y =Nitrospiraceae, z = Saprospiraceae)) + 
+  geom_point(aes(fill=STP, color=STP, shape=Time), stroke = 1, size=4,position=position_jitter_tern(x = 0.01, y = 0.01, z = 0.01))+
+  scale_color_manual(values =STPcolor ) + 
+  scale_fill_manual(values = STPcolor) +
+  theme_bw()  +
+  #theme_showarrows() + 
+  theme_nogrid_minor() +
+  theme_nomask() 
+
+ 
+#PCOA with variables
+ord <- prcomp(ternary.df.1[, 1:4])
+
+ggord(prcomp(ternary.df.1[, 1:4]), ternary.df.1$Time,repel = TRUE,cols = c('#b3b3b3ff', '#bc4046ff'))
+
+#GraPhlAn plot input
+
+graphlan.df <- OTU.df
+graphlan.df["pred0"] <- rowSums(graphlan.df[, c(11,13,15,17,19,21)])
+graphlan.df["pred334"] <- rowSums(graphlan.df[, c(12,14,16,18,20,22)])
+graphlan.df$pred334[graphlan.df$pred334 >0] <- "yes"
+graphlan.df$pred334[graphlan.df$pred334 ==0] <- "no"
+
+graphlan.16s <- graphlan.df[,c(4:9, 1 ,23)]
+for (i in 1:6){
+  graphlan.16s[,i] <- as.character(graphlan.16s[,i])
+}
+graphlan.16s[, c(1:6)][is.na(graphlan.16s[, c(1:6)]) ==TRUE] <- "not_assigned"
+
+attach(graphlan.16s)
+graphlan.16s["ASV"] <- paste(Kingdom, Phylum, Class, Order,Family, Genus, Row.names, sep = ".")
+detach(graphlan.16s)
+
+graphlan.16s <- graphlan.16s[,c("ASV", "pred334")]
+write.csv(graphlan.16s, file="graphlan.16s", row.names = FALSE)
+
+#density plot########################
+ps.prop.adonis <- merge(as.data.frame(tax_table(ps.prop)), as.data.frame(t(otu_table(ps.prop))), by="row.names", all.y=TRUE)
+colnames(ps.prop.adonis)[1] <- "ASV"
+
+#family-levle 
+density.list <- list()
+for (i in c("Phylum", "Class", "Order", "Family", "Genus")){
+  ps.prop.adonis.i <- aggregate(ps.prop.adonis[,c(14:20)], by=list(ps.prop.adonis[,i]), sum)
+  row.names(ps.prop.adonis.i) <- ps.prop.adonis.i[,1]
+  ps.prop.adonis.i[,1] <-NULL
+  ps.prop.adonis.i <- phyloseq(otu_table(ps.prop.adonis.i, taxa_are_rows=TRUE), 
+                                    sample_data(samdf))
+  ps.prop.adonis.i.bray <- phyloseq::distance(ps.prop.adonis.i, method = "bray")
+  i.density <- melt(as.matrix(unlist(ps.prop.adonis.i.bray)))[,-1]
+  i.density[,1] <- i
+  density.list[[i]] <- i.density
+}
+density.df <- do.call(rbind,density.list)
+row.names(density.df) <- NULL
+colnames(density.df)[1] <- "ASV.rank"
+
+density.df$ASV.rank <- ordered(density.df$ASV.rank, levels = c("Phylum", "Class", "Order", "Family", "Genus"))
+density.df$value <- 1-density.df$value
+
+density.df$value[density.df$value ==1] <- NA
+density.df <- na.omit(density.df)
+#plot density
+density.color <- c("#5bb733ff","#3592d4ff","#bb7fe2ff","#feb24cff",alpha("#0037e5ff",0.5))
+
+theme_set(theme_bw())
+ggplot(density.df, aes(x=value, fill=ASV.rank, colour=ASV.rank)) + 
+  geom_density(alpha=.8)+
+  scale_fill_manual(values = density.color)+
+  scale_color_manual(values = density.color)+
+  labs(x="Between-community similarity quantified by β diversity", y= "Density")+
+  theme(legend.position="top",
+        axis.text.y = element_blank(),axis.ticks.y = element_blank()
+       )
+  
+# wilcoxon test
+compare <- combn(x = levels(density.df$ASV.rank), m = 2)
+wilcoxon <- list()
+for (i in 1:ncol(compare)){
+  density.df.i <- subset(density.df, ASV.rank %in% compare[,i])
+  wilcoxon[[i]] <- wilcox.test(value ~ ASV.rank, data = density.df.i, alterantive="less")
+  wilcoxon[[i]] <- as.data.frame(wilcoxon[[i]][["p.value"]])[1,]
+} 
+
+wilcoxon.df <- do.call(rbind, wilcoxon)
+row.names(wilcoxon.df)<- paste(compare[1,], compare[2,],sep = ".")
+
+#DESeq2 with phyloseq########################
+
+ps.dds = phyloseq_to_deseq2(ps, ~Time)
+#provide you own geometric means (calculated in a manner that is tolerant of zeros)
+gm_mean = function(x, na.rm=TRUE){
+  exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))
+}
+geoMeans = apply(counts(ps.dds), 1, gm_mean)
+ps.dds = estimateSizeFactors(ps.dds, geoMeans = geoMeans)
+ps.dds = DESeq(ps.dds, test="Wald", fitType = "local")
+
+#DESeq2 result
+ps.deseq2 = results(ps.dds)
+ps.deseq2 =ps.deseq2[order(ps.deseq2$padj, na.last = NA),]
+alpha = 0.01
+sigtab <- ps.deseq2[ps.deseq2$padj < alpha,]
+sigtab = cbind(as(sigtab, "data.frame"), as(tax_table(ps)[rownames(sigtab), ], "matrix"))
+
+#plot significant ASV elevation/deleption
+theme_set(theme_bw())
+TAXcolor <- c("Proteobacteria" = "#000570ff", "Bacteroidota"="#bc4046ff","Planctomycetota"="#c73284ff","Acidobacteriota"="#5bb733ff","Actinobacteriota"="#3592d4ff","Chloroflexota"="#e88b74ff","Myxococcota"="#bb7fe2ff","Verrucomicrobiota"="#a01bf9ff","Nitrospirota"="#feb24cff","Gemmatimonadota"="#000570ff","Firmicutes_A"="#9c9c9cff","Spirochaetota"="#9c9c9cff","Patescibacteria"="#9c9c9cff","Cyanobacteriota"="#9c9c9cff")
+
+###Plot 1: ASVs elevation/deleption above genus level
+sigtabgen = subset(sigtab, !is.na(Genus))
+# Phylum order
+x = tapply(sigtabgen$log2FoldChange, sigtabgen$Phylum, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Phylum = factor(as.character(sigtabgen$Phylum), levels=names(x))
+# Genus order
+x = tapply(sigtabgen$log2FoldChange, sigtabgen$Genus, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Genus = factor(as.character(sigtabgen$Genus), levels=names(x))
+# Family order
+x = tapply(sigtabgen$log2FoldChange, sigtabgen$Family, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Family = factor(as.character(sigtabgen$Family), levels=names(x))
+
+ggplot(sigtabgen, aes(x=Family, y=log2FoldChange, color=Phylum)) + geom_point(size=6) + 
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))+
+  scale_color_manual(values = TAXcolor)+
+  ggtitle("Significantly elevated or depleted ASVs in d334 across six starting microbiomes")
+
+###Plot 2:ASVs elevation/deleption at species level
+# Species order
+sigtabspe = subset(sigtab, !is.na(Species))
+# Family order
+x = tapply(sigtabspe$log2FoldChange, sigtabspe$Species, function(x) max(x))
+x = sort(x, TRUE)
+sigtabspe$Species = factor(as.character(sigtabspe$Species), levels=names(x))
+
+ggplot(sigtabspe, aes(x=Species, y=log2FoldChange, color=Phylum)) + geom_point(size=6) + 
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))+
+  scale_color_manual(values = TAXcolor)+
+  ggtitle("Significantly elevated or depleted ASVs in d334 enrichment culturs compared to the founding populations across 6 STPs")
+
+
+#Plot 3: plot significant ASV elevation above genus level
+#enriched tax
+posigtab = sigtab[sigtab$log2FoldChange>0,]
+posigtab = subset(posigtab, !is.na(Genus))
+# Genus order
+x = tapply(posigtab$log2FoldChange, posigtab$Genus, function(x) max(x))
+x = sort(x, TRUE)
+posigtab$Genus = factor(as.character(posigtab$Genus), levels=names(x))
+# Family order
+x = tapply(posigtab$log2FoldChange, posigtab$Family, function(x) max(x))
+x = sort(x, TRUE)
+posigtab$Family = factor(as.character(posigtab$Family), levels=names(x))
+
+#padj value < 0.01, 119 ASVs
+#padj value < 0.001, 88 ASVs
+#padj value < 0.0001, 65 ASVs >>> particularly highly elevated
+
+posigtab.top20 <- posigtab[,"padj"]
+names(posigtab.top20) <- row.names(posigtab)
+posigtab.top20 <- names(sort(posigtab.top20))[1:20]
+posigtab.top20 <- unique(posigtab[posigtab.top20,]$Genus)
+
+posigtab.par <- unique(subset(posigtab, padj < 0.0001)[,"Genus"])
+
+ggplot(posigtab, aes(x=Genus, y=log2FoldChange, color=Phylum)) + geom_point(size=6) + 
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))+
+  scale_color_manual(values = TAXcolor)+
+  theme(axis.text.x=
+          element_text(colour=ifelse(levels(posigtab$Genus) %in% posigtab.par, "Red","black")))+
+  ggtitle("Significantly elevated ASVs in d334 enrichment culturs compared to the founding populations across 6 STPs")
+
+
+
+
