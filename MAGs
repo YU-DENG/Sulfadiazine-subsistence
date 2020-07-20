@@ -1,0 +1,639 @@
+
+setwd("/media/public3/DY/MAGs")
+source('http://bioconductor.org/biocLite.R')
+biocLite('phyloseq')
+library("phyloseq"); packageVersion("phyloseq")
+library("ggplot2")
+library("reshape2")
+library("nlme")
+library("ape")
+library("ggpubr")
+biocLite('psych')
+library("psych")
+
+
+
+###### MAGs filtering ######
+mag.ratio <- as.matrix(read.table("mag.511.ratio", header = TRUE,  row.names = 1, sep = "\t"))
+mag.count <- as.matrix(read.table("mag.511.count", header = TRUE,  row.names = 1, sep = "\t"))
+taxa <- as.matrix(read.table("taxa.txt", header = TRUE,  row.names = 1, sep = "\t"))
+samdf <- read.table("sampledata.txt", header = TRUE,  row.names = 1, sep = "\t")
+
+#phyloseq data import
+ps.ratio <- phyloseq(otu_table(mag.ratio, taxa_are_rows=TRUE), 
+                     sample_data(samdf), 
+                     tax_table(taxa))
+ps.count <- phyloseq(otu_table(mag.count, taxa_are_rows=TRUE), 
+                     sample_data(samdf), 
+                     tax_table(taxa))
+
+###### filtering by taxa: 510 MAGs passed taxa filtering
+ps.ratio <- subset_taxa(ps.ratio, !is.na(Phylum)& Domain %in% c("d__Bacteria"))
+ps.count <- subset_taxa(ps.count, !is.na(Phylum)& Domain %in% c("d__Bacteria"))
+
+###### filtering by sample prevanlence: 359 MAGs passed prevalence (>2) filtering
+# Compute prevalence of each feature, store as data.frame
+prevdf = apply(X = otu_table(ps.count),
+               MARGIN = ifelse(taxa_are_rows(ps.count), yes = 1, no = 2),
+               FUN = function(x){sum(x > 0)})
+# Add taxonomy and total read counts to this data.frame
+prevdf = data.frame(Prevalence = prevdf,
+                    TotalAbundance = taxa_sums(ps.count),
+                    tax_table(ps.count))
+
+keepTaxa = rownames(prevdf)[(prevdf$Prevalence > 2)]
+ps.ratio = prune_taxa(keepTaxa, ps.ratio)
+ps.count = prune_taxa(keepTaxa, ps.count)
+
+###### filteriny by phylum with rare and low prevalence MAGs : 335 MAGs passed supervised filtering
+theme_set(theme_bw())
+TAXcolor <- c("p__Acidobacteriota"="#5bb733ff","p__Actinobacteriota"="#3592d4ff", "p__Aerophobetota"="#9c9c9cff","p__Armatimonadota"="#9c9c9cff","p__Bacteroidota"="#bc4046ff","p__Bdellovibrionota"="#9c9c9cff","p__Calditrichota"="#9c9c9cff","p__Chloroflexota"="#e88b74ff","p__Chrysiogenetota"="#9c9c9cff","p__Cyanobacteriota"="#9c9c9cff","p__Deinococcota"="#9c9c9cff","p__Dependentiae"="#9c9c9cff","p__Eisenbacteria"="#9c9c9cff","p__Elusimicrobiota"="#9c9c9cff","p__Firmicutes_H"="#9c9c9cff","p__Gemmatimonadota"="#000570ff","p__Margulisbacteria"="#9c9c9cff","p__Myxococcota"="#bb7fe2ff","p__Nitrospirota"="#feb24cff","p__Patescibacteria"="#9c9c9cff","p__Planctomycetota"="#c73284ff","p__Proteobacteria"="#000570ff","p__Spirochaetota"="#9c9c9cff","p__UBP10"="#9c9c9cff","p__Verrucomicrobiota"="#a01bf9ff")
+
+ggplot(subset(prevdf, prevdf$Prevalence > 2), aes(TotalAbundance, Prevalence/32,color=Phylum)) +
+  geom_hline(yintercept = 0.1, alpha = 0.5, linetype = 2) +  geom_point(size = 2, alpha = 0.8) +
+  scale_x_log10() +  xlab("Total Abundance") + ylab("Prevalence [Frac. Samples]") +
+  facet_wrap(~Phylum) +scale_color_manual(values = TAXcolor)+ theme(legend.position="none")
+
+filterPhyla = c("p__Aerophobetota","p__Cyanobacteriota","p__Deinococcota","p__Firmicutes_H","p__Patescibacteria","p__Spirochaetota","p__UBP10")
+ps.ratio = subset_taxa(ps.ratio, !Phylum %in% filterPhyla)
+ps.count = subset_taxa(ps.count, !Phylum %in% filterPhyla)
+
+###### Adonis ######
+
+###To measure the variance of microbial community composition explained by founding population (STP) and enrichment perturbation (Cluster)
+#using count matrix
+adonis(phyloseq::distance(subset_samples(ps.count, Time %in% c("d134","d231","d334")), method = "bray") ~ STP,
+       data = subset(samdf, Time %in% c("d134","d231","d334")))
+adonis(phyloseq::distance(subset_samples(ps.count, Time %in% c("d134","d231","d334")), method = "bray") ~ Time,
+       data = subset(samdf, Time %in% c("d134","d231","d334")))
+
+###To measure the degree of similarity of microbial community compositions among SDZ-subsisting enrichment cultures along elongated enrichment process
+compare <- combn(x = c("d134","d231","d334"), m = 2)[,c(1,2)]
+#using count matrix
+adonis.list <- list()
+adonis.bray <- list()
+for (i in 1:ncol(compare)){
+  physeq.sub <- subset_samples(ps.count, Time %in% compare[,i])
+  sampledata.sub <- subset(samdf, Time %in% compare[,i])
+  adonis.list[[i]] <- adonis(phyloseq::distance(physeq.sub, method = "bray") ~ STP, data = sampledata.sub)
+  adonis.bray[[i]] <- as.data.frame(adonis.list[[i]][["aov.tab"]])[1,]
+  rownames(adonis.bray[[i]]) <- paste(compare[1,i], compare[2,i],sep = ".")
+} 
+adonis.bray.df <- do.call(rbind, adonis.bray)
+
+###### STP Prevalence & lme fitting ######
+
+###### proportion of consistantly selected phylotypes across founding populations (STPs)
+# STP prevalence of 335 MAGs
+mag.STPpre <- merge(as.data.frame(get_taxa(ps.count)), as.data.frame(taxa), by="row.names", all.x=TRUE)
+names(mag.STPpre)[1] <- "MAG"
+mag.STPpre <-melt(mag.STPpre)
+names(mag.STPpre)[9] <- "Name"
+
+sample.pre <- as.data.frame(samdf)
+mag.STPpre <- merge(mag.STPpre, sample.pre, by="Name", all.x = TRUE)
+rm(sample.pre)
+names(mag.STPpre)[c(1,10)] <- c("sample","count")
+
+mag.STPpre <- subset(mag.STPpre, Time %in% c("d134","d231","d334"))
+mag.STPpre$STP [mag.STPpre$count == 0] <- NA
+
+STPpre <- list()
+for (i in levels(as.factor(mag.STPpre$MAG))){
+  mag.STPpre.i <- subset(mag.STPpre, MAG %in% c(i))
+  STPpre[[i]] <- length(unique(mag.STPpre.i$STP[!is.na(mag.STPpre.i$STP)]))
+}
+mag.STPpre.df <- data.frame(MAG = levels(as.factor(mag.STPpre$MAG)),
+                     STPpre = do.call(rbind, STPpre))
+
+#MAGs appearing in all 6 STPs accounted for ~30% (97/335)
+nrow(subset(mag.STPpre.df, STPpre %in% c("6")))
+
+###### lme fitting & variance partitioning analyses
+mag.STPpre.lme.df <- subset(mag.STPpre, MAG %in% subset(mag.STPpre.df, STPpre %in% c("6"))[,"MAG"])
+mag.STPpre.lme.df <- mag.STPpre.lme.df[,c("MAG","Phylum","Class","Order","Family","Genus","STP","count")]
+mag.STPpre.lme.df <- na.omit(mag.STPpre.lme.df)
+
+mag.STPpre.lme <- lme(count ~ 1, random = ~1|Phylum/Class/Order/Family/Genus/MAG/STP,
+                   data = mag.STPpre.lme.df) 
+varcomp(mag.STPpre.lme,T,T)
+
+
+
+
+###### MAG Composition Plot ######
+
+###### alpha diversity 
+theme_set(theme_bw())
+STPcolor <- c("SK"="#000570","ST"="#f46d43","STL"="#695400","SWH"="#3592d4","TP"="#feb24c","YL"="#c73284")
+
+plot_richness(subset_samples(ps.count, Time %in% c("d0","d134","d231","d334")),
+              x="STP", measures=c("Shannon", "Simpson"), color="STP",shape="Time")+
+              geom_point(size=, alpha=0.6)+
+              scale_color_manual(values = STPcolor)
+
+###### beta diversity; ordination
+ps.ratio.ord <- ordinate(subset_samples(ps.ratio, Time %in% c("d134","d231","d334")),
+                         method="PCoA", distance="bray")
+plot_ordination(subset_samples(ps.ratio, Time %in% c("d134","d231","d334")),
+                ps.ratio.ord, color="STP", shape="Time", 
+                title="Clustering of SDZ-subsisting communities \nusing PCoA on Bray-Curtis distance of 335 MAGs relative abundance (proportion)")+
+  geom_point(size=6, alpha=0.6)+
+  scale_color_manual(values = STPcolor)
+
+###### composition; top 20 MAGs across all STPs
+theme_set(theme_bw())
+MAGcolor <- c("SDZ_SK_d134_metaBAT2_22"="#bb7fe2ff","SDZ_SK_d134_metaBAT2_6"=alpha("#9c9c9cff",0.8),"SDZ_SK_d134_metawrap_12"=alpha("#3592d4ff",0.8),"SDZ_SK_d334_CONCOCT_40"="#000570ff","SDZ_SK_d334_MaxBin2_010"=alpha("#c73284ff", 0.8),"SMZ_SZ_d166_ref1a_MaxBin2_002"=alpha("#3592d4ff",0.5),"SDZ_ST_d231_metaBAT2_42"="#e88b74ff","SDZ_ST_d231_metaBAT2_8"="#5bb733ff","SDZ_ST_d334_CONCOCT_11"="#3592d4ff","SDZ_ST_d334_CONCOCT_95"=alpha("#c73284ff",0.6),"SDZ_STL_d134_metaBAT2_42"=alpha("#c73284ff",0.6),"SDZ_SWH_d134_CONCOCT_75"="#e88b74ff","SDZ_SWH_d231_CONCOCT_90"=alpha("#c73284ff",0.5),"SDZ_SWH_d231_MaxBin2_001"="#feb24cff","SDZ_SWH_d231_metawrap_21"="#c73284ff","SDZ_TP_d231_metaBAT2_39"=alpha("#c73284ff",0.3),"SDZ_TP_d334_MaxBin2_018"=alpha("#c73284ff",0.2),"SDZ_TP_d334_MaxBin2_021"=alpha("#bc4046ff",0.8),"SDZ_TP_d334_metawrap_21"=alpha("#feb24cff",0.5),"SDZ_YL_d334_CONCOCT_63"="#c73284ff")
+#top20 MAG phyloseq object
+top20 <- names(sort(taxa_sums(subset_samples(ps.ratio, Time %in% c("d134","d231","d334"))),
+                    decreasing=TRUE))[1:20]
+ps.ratio.top20 <- subset_samples(ps.ratio, Time %in% c("d134","d231","d334"))
+ps.ratio.top20 <- prune_taxa(top20, ps.ratio.top20)
+
+ps.ratio.top20.df <- as.data.frame(otu_table(ps.ratio.top20))
+ps.ratio.top20.df["MAG"] <- row.names(ps.ratio.top20.df)
+ps.ratio.top20.df <- melt(ps.ratio.top20.df)
+names(ps.ratio.top20.df)[2:3] <- c("Name","ratio")
+#merge metadata
+ps.ratio.top20.df <- merge(ps.ratio.top20.df, samdf, by="Name", all.x=TRUE)
+ps.ratio.top20.df$Time <- sub("d","",ps.ratio.top20.df$Time)
+ps.ratio.top20.df$Time <- as.numeric(ps.ratio.top20.df$Time)
+#merge taxa info
+taxa.top20 <- as.data.frame(tax_table(ps.ratio.top20))
+taxa.top20["MAG"] <- row.names(taxa.top20)
+rownames(taxa.top20) <- NULL
+ps.ratio.top20.df <- merge(ps.ratio.top20.df, taxa.top20, by="MAG", all.x=TRUE)
+#order MAG by relative abundace
+x = tapply(ps.ratio.top20.df$ratio, ps.ratio.top20.df$MAG, function(x) max(x))
+x = sort(x, TRUE)
+ps.ratio.top20.df$MAG = factor(as.character(ps.ratio.top20.df$MAG), levels=names(x))
+
+#plot
+ggplot(ps.ratio.top20.df, aes(Time, ratio))+
+  geom_area(aes(fill=MAG))+
+  facet_wrap(~STP, scales="free_x", nrow=1)+
+  ylab("MAG accumulated relative abundance")+
+  #scale_color_manual(values = MAGcolor)+
+  scale_fill_manual(values = MAGcolor)+
+  scale_x_continuous(breaks=c(134, 231, 334), labels =c("d134","d231","d334"))+
+  theme(legend.position="bottom",
+        panel.grid = element_blank(),strip.background = element_blank())+
+  guides(fill=guide_legend(nrow=3,byrow=TRUE))
+
+###### composition; top 10 MAGs across all STPs
+top10.109MAGs <- c("SDZ_TP_d334_MaxBin2_021","SDZ_TP_d334_MaxBin2_018","SDZ_SK_d334_CONCOCT_40","SDZ_ST_d231_metaBAT2_8","SDZ_ST_d334_CONCOCT_95","SDZ_SWH_d231_metawrap_21","SDZ_SK_d334_MaxBin2_010","SDZ_TP_d334_metawrap_21","SMZ_SZ_d166_ref1a_MaxBin2_002","SDZ_ST_d334_CONCOCT_11") 
+top10.color <- c("Top9_f__Micrococcaceae"="#3592d4ff","Top10_f__Nocardioidaceae"=alpha("#3592d4ff",0.5),
+                 "Top8_f__Nitrospiraceae"=alpha("#feb24cff",0.8),
+                 "Top2_f__SM1A02"="#c73284ff","Top5_f__SM1A02"=alpha("#c73284ff",0.5), "Top6_f__SM1A02"=alpha("#c73284ff",0.3), "Top7_f__SM1A02"=alpha("#c73284ff",0.15),
+                 "Top4_f__Pyrinomonadaceae"="#5bb733ff",
+                 "Top3_f__Xanthobacteraceae"="#000570ff",
+                  "Top1_f__Saprospiraceae"=alpha("#bc4046ff", 0.7))
+
+
+#rename MAG in legend
+top10.109MAGs.df <- data.frame(MAG=top10.109MAGs,
+                               rank=paste0("Top", seq(1:10)))
+top10.109MAGs.df$rank = factor(as.character(top10.109MAGs.df$rank), levels=paste0("Top", seq(1:10)))
+top10.109MAGs.df <- merge(top10.109MAGs.df,taxa.top20[,c("MAG","Family")], all.x = TRUE )
+top10.109MAGs.df["legend"] <- paste(top10.109MAGs.df$rank, top10.109MAGs.df$Family, sep = "_")
+top10.109MAGs.df$legend=factor(as.character(top10.109MAGs.df$legend), 
+                               levels=top10.109MAGs.df[c(8,7,1,3,5,6,2,9,10,4),"legend"])
+write.csv(top10.109MAGs.df, file = "top10.109MAGs.df", row.names = FALSE)
+
+ps.ratio.top10.df <- subset(ps.ratio.top20.df, MAG %in% top10.109MAGs)
+ps.ratio.top10.df <- merge(ps.ratio.top10.df, top10.109MAGs.df[,c("MAG","legend")],by="MAG", all.x = TRUE)
+names(ps.ratio.top10.df)[17] <-"SGBs"
+ps.ratio.top10.df$STP <- paste(ps.ratio.top10.df$STP, "starting microbime")
+
+#plot
+theme_set(theme_bw())
+ggplot(ps.ratio.top10.df, aes(Time, ratio))+
+  geom_area(aes(fill=SGBs))+
+  facet_wrap(~STP, scales="free_x", nrow=1)+
+  ylab("Top 10 SGBs accumulated relative abundance")+
+  #scale_color_manual(values = MAGcolor)+
+  scale_fill_manual(values = top10.color)+
+  scale_x_continuous(breaks=c(134, 231, 334), labels =c("d134","d231","d334"))+
+  scale_y_continuous(limits =c(0,60), breaks=c(0, 20,40,60))+
+  theme(legend.position="bottom", legend.text = element_text(size = 12),
+        panel.grid = element_blank(),strip.background = element_blank(),strip.text = element_text(size=14))+
+  guides(fill=guide_legend(nrow=2,byrow=TRUE))
+
+
+
+###### composition; top 3 MAGs of individual STPs
+
+#produce dataframe containing 18samles, 335MAGs: ps.ratio.18.df
+ps.ratio.18.df <- as.data.frame(otu_table(subset_samples(ps.ratio, Time %in% c("d134","d231","d334"))))
+ps.ratio.18.df["MAG"] <- row.names(ps.ratio.18.df)
+ps.ratio.18.df <- melt(ps.ratio.18.df)
+names(ps.ratio.18.df)[2:3] <- c("Name","ratio")
+#merge metadata
+ps.ratio.18.df <- merge(ps.ratio.18.df, samdf, by="Name", all.x=TRUE)
+ps.ratio.18.df$Time <- as.numeric(sub("d","",ps.ratio.18.df$Time))
+#merge taxa info
+taxa.df <- as.data.frame(tax_table(ps.ratio))
+taxa.df["MAG"] <- row.names(taxa.df)
+rownames(taxa.df) <- NULL
+ps.ratio.18.df <- merge(ps.ratio.18.df, taxa.df, by="MAG", all.x=TRUE)
+
+#plot
+top3.STPclolor <-c("SDZ_SK_d134_metaBAT2_6,f__Fimbriimonadaceae"=alpha("#000570ff",0.5),"SDZ_SK_d334_MaxBin2_010,f__SM1A02"="#bc4046ff","SDZ_ST_d231_metaBAT2_8,f__Pyrinomonadaceae"="#c73284ff","SDZ_ST_d334_CONCOCT_11,f__Nocardioidaceae"="#5bb733ff","SDZ_ST_d334_CONCOCT_95,f__SM1A02"="#3592d4ff","SDZ_SK_d334_CONCOCT_40,f__Xanthobacteraceae"="#e88b74ff","SDZ_SWH_d231_CONCOCT_90,f__SM1A02"="#bb7fe2ff","SDZ_TP_d334_MaxBin2_021,f__Saprospiraceae"=alpha("#a01bf9ff",0.3),"SDZ_SWH_d134_MaxBin2_004,f__UA16"="#feb24cff","SDZ_SWH_d231_metawrap_21,f__SM1A02"="#000570ff","SDZ_TP_d334_MaxBin2_018,f__SM1A02"="#9c9c9cff")
+
+top3.STP <- list()
+for (i in c("SK","ST","STL","SWH","TP", "YL")){
+  top3.STP.i <- names(sort(taxa_sums(subset_samples(subset_samples(ps.ratio, Time %in% c("d134","d231","d334")),
+                                            STP %in% i)),decreasing=TRUE))[1:3]
+  top3.STP.i <- subset(ps.ratio.18.df, MAG %in% top3.STP.i)
+  top3.STP.i$MAG <- paste(top3.STP.i$MAG, top3.STP.i$Family,sep=",")
+
+top3.STP[[i]] <- ggplot(top3.STP.i, aes(Time, ratio))+
+      geom_area(aes(fill=MAG))+
+      facet_wrap(~STP, scales="free_x", nrow=1)+
+      ylab("MAG accumulated relative abundance")+
+      scale_color_manual(values = top3.STPclolor)+
+      scale_fill_manual(values = top3.STPclolor)+
+      scale_x_continuous(breaks=c(134, 231, 334), labels =c("134","231","334"))+
+      theme(legend.position="bottom",
+            panel.border = element_blank(),panel.grid = element_blank(),strip.background = element_blank())+
+      guides(fill=guide_legend(nrow=1,byrow=TRUE))+
+    ggtitle(i)
+}
+gridExtra::grid.arrange(top3.STP[["SK"]], top3.STP[["ST"]],  top3.STP[["STL"]],top3.STP[["SWH"]], top3.STP[["TP"]],top3.STP[["YL"]],
+          ncol = 2)
+
+
+###### composition; heatmap
+theme_set(theme_bw())
+#all 335 MAGs
+plot_heatmap(subset_samples(ps.count,Time %in% c("d134","d231","d334")),sample.order="STP",sample.label="Time",
+             low="#FFFFCC", high="#000033", na.value="white")+
+  ggtitle("Clustering of 335 MAGs \nusing NMDS on Bray-Curtis distance of relative abundance (count)")
+
+#Subset a smaller dataset based on genus containing top 20 MAGs
+genus.MAGtop20 <- levels(taxa.top20$Genus)
+plot_heatmap(subset_taxa(subset_samples(ps.count,Time %in% c("d134","d231","d334")), Genus %in% genus.MAGtop20),
+             taxa.label = "Genus", sample.order="Name",
+             low="#FFFFCC", high="#000033", na.value="white")+
+  ggtitle("Clustering of genus containg top 20 MAGs \nusing NMDS on Bray-Curtis distance of relative abundance (count)")
+
+
+###### 109 MAG network ######
+
+mag.net.df <- ps.ratio.18.df
+
+#only keep MAG that are significantly elevated at the end of enrichment, compare to founding population
+family17.16Senriched <- c("f__Micrococcaceae","f__Saprospiraceae","f__Nocardioidaceae","f__Pyrinomonadaceae","f__Parachlamydiaceae","f__Obscuribacteraceae","f__Nitrospiraceae","f__Chitinophagaceae","f__Chthoniobacteraceae","f__Nitrosomonadaceae","f__Verrucomicrobiaceae","f__Sphingomonadaceae","f__Parvibaculaceae","f__Burkholderiaceae","f__A4b","f__SM1A02","f__Xanthobacteraceae")
+mag.net.df <- subset(mag.net.df, Family %in% family17.16Senriched)
+
+#keep MAG with STPpre >= 2
+mag.STPpre.least2 <- subset(mag.STPpre.df, !STPpre %in% c("0","1"))[,"MAG"] 
+mag.net.df <- subset(mag.net.df, MAG %in% mag.STPpre.least2)
+
+mag.net <- unique(mag.net.df$MAG)
+mag.net <- as.data.frame(otu_table(subset_samples(ps.ratio, Time %in% c("d134", "d231","d334"))))[mag.net, ]
+mag.net.accum.ratio <- as.data.frame(rowSums(mag.net))
+names(mag.net.accum.ratio)[1] <- "accum.ratio.abund.18sample"
+mag.net.accum.ratio["Id"] <- row.names(mag.net.accum.ratio)
+#
+mag.net.spearman <- psych::corr.test(t(mag.net), method = "spearman", use="pairwise", adjust="fdr", alpha=0.05)
+#only consider MAG association with adjp < 0.05, at the same time r>0.6 or r < -0.6
+mag.net.spearman.r <- mag.net.spearman$r
+mag.net.spearman.p <- mag.net.spearman$p
+mag.net.spearman.r[mag.net.spearman.p > 0.05|abs(mag.net.spearman.r)<0.6|abs(mag.net.spearman.r==1)] = 0
+
+###### MAG remained in network analysis, 109, mag.net.107names
+ps.net.df <- as.data.frame(mag.net.spearman.r)
+names(ps.net.df)[1:109] <- paste("S",colnames(ps.net.df),sep = "_")
+#ps.net.df[ps.net.df == 0] <-1
+ps.net.df[ps.net.df > 0] <-100
+ps.net.df[ps.net.df < 0] <-10
+
+ps.net.df["sum"] <- rowSums(ps.net.df)
+mag.net.102names <- rownames(subset(ps.net.df,!sum %in% c("0")))
+
+###### Gephi visulization
+
+write.csv(mag.net.spearman.r, file = "mag.net.spearman.r.csv")
+
+#add metadata for network nodes
+mag.net.nodes <- read.table("nodes.csv", header = TRUE,  sep = ",")
+rownames(mag.net.nodes) <-mag.net.nodes$Id 
+mag.net.nodes <- merge(mag.net.nodes, prevdf, by="row.names", all.x = TRUE)
+mag.net.nodes$Row.names <- NULL
+
+mag.net.nodes <- merge(mag.net.nodes, mag.net.accum.ratio, by="Id")
+mag.net.nodes$TotalAbundance <- NULL
+mag.net.nodes$Label <- mag.net.nodes$Family
+write.csv(mag.net.nodes, file = "mag.net.nodes.csv")
+
+#add metadata for network edges
+mag.net.edges <- read.table("edges.csv", header = TRUE,  sep = ",")
+mag.net.edges["spear.corr"] <- as.numeric(mag.net.edges$Weight)
+mag.net.edges$spear.corr[mag.net.edges$spear.corr>0] <-"positive"
+mag.net.edges$spear.corr[mag.net.edges$spear.corr<0] <-"negative"
+write.csv(mag.net.edges, file = "mag.net.edges.csv", row.names = FALSE)
+
+#split network into positive and negative
+#positive
+mag.net.edges.po <- subset(mag.net.edges, mag.net.edges$spear.corr=="positive")
+mag.net.nodes.po <- subset(mag.net.nodes, Id %in%mag.net.edges.po$Source )
+mag.net.nodes.po$Label <- mag.net.nodes.po$Family
+mag.net.nodes.po$Label[mag.net.nodes.po$accum.ratio.abund.18sample <10] <- NA
+write.csv(mag.net.edges.po, file = "mag.net.edges.po.csv", row.names = FALSE)
+write.csv(mag.net.nodes.po, file = "mag.net.nodes.po.csv", row.names = FALSE)
+
+#negative
+mag.net.edges.ne <- subset(mag.net.edges, mag.net.edges$spear.corr=="negative")
+mag.net.nodes.ne <- subset(mag.net.nodes, Id %in%mag.net.edges.ne$Source )
+mag.net.nodes.ne$Label <- mag.net.nodes.ne$Family
+mag.net.nodes.ne$Label[mag.net.nodes.ne$accum.ratio.abund.18sample <10] <- NA
+write.csv(mag.net.edges.ne, file = "mag.net.edges.ne.csv", row.names = FALSE)
+write.csv(mag.net.nodes.ne, file = "mag.net.nodes.ne.csv", row.names = FALSE)
+
+View(mag.net.spearman.r["SMZ_SZ_d166_ref1a_MaxBin2_002",])
+
+
+#network for p__Actinobacteriota
+mag.net.Actinobacteriota.allr <- subset(mag.net.nodes, Phylum %in% c("p__Actinobacteriota"))[,"Id"]
+
+mag.net.edges.Actinobacteriota.allr1 <- subset(mag.net.edges, Source %in% mag.net.Actinobacteriota.allr)
+mag.net.edges.Actinobacteriota.allr2 <- subset(mag.net.edges, Target %in% mag.net.Actinobacteriota.allr)
+mag.net.edges.Actinobacteriota.allr <- rbind(mag.net.edges.Actinobacteriota.allr1, mag.net.edges.Actinobacteriota.allr2)
+
+mag.net.nodes.Actinobacteriota <- unique(c(as.character(mag.net.edges.Actinobacteriota.allr$Source), 
+                                           as.character(mag.net.edges.Actinobacteriota.allr$Target)))
+mag.net.nodes.Actinobacteriota <- subset(mag.net.nodes, Id %in% mag.net.nodes.Actinobacteriota)
+
+write.csv(mag.net.nodes.Actinobacteriota, file = "mag.net.nodes.Actinobacteriota.csv", row.names = FALSE)
+write.csv(mag.net.edges.Actinobacteriota.allr, file = "mag.net.edges.Actinobacteriota.allr.csv", row.names = FALSE)
+
+mag.net.nodes.Actinobacteriota$Id
+
+
+#network for g__Hydrogenophaga
+
+mag.net.Hydrogenophaga <- subset(mag.net.nodes, Genus %in% c("g__Hydrogenophaga"))[,"Id"]
+
+mag.net.edges.Hydrogenophaga1 <- subset(mag.net.edges, Source %in% mag.net.Hydrogenophaga)
+mag.net.edges.Hydrogenophaga2 <- subset(mag.net.edges, Target %in% mag.net.Hydrogenophaga)
+mag.net.edges.Hydrogenophaga <- rbind(mag.net.edges.Hydrogenophaga1, mag.net.edges.Hydrogenophaga2)
+
+mag.net.nodes.Hydrogenophaga <- unique(c(as.character(mag.net.edges.Hydrogenophaga$Source), 
+                                           as.character(mag.net.edges.Hydrogenophaga$Target)))
+mag.net.nodes.Hydrogenophaga <- subset(mag.net.nodes, Id %in% mag.net.nodes.Hydrogenophaga)
+
+write.csv(mag.net.nodes.Hydrogenophaga, file = "mag.net.nodes.Hydrogenophaga.csv", row.names = FALSE)
+write.csv(mag.net.edges.Hydrogenophaga, file = "mag.net.edges.Hydrogenophaga.csv", row.names = FALSE)
+
+###### heatmap visulization
+
+heatmap(mag.net.spearman.r[mag.net.nodes.Actinobacteriota$Id,mag.net.nodes.Actinobacteriota$Id],
+        col=viridis(15, direction = -1),scale='none')
+heatmap.2(mag.net.spearman.r, col=viridis(15, direction = -1),scale='none',show_heatmap_legend = TRUE)
+
+
+
+###### MAG network all r value ######
+
+#only consider MAG association with adjp < 0.05, no filtering on r value
+mag.net.spearman.r.allr <- mag.net.spearman$r
+mag.net.spearman.r.allr[mag.net.spearman.p > 0.05|abs(mag.net.spearman.r.allr==1)] = 0
+
+###### Gephi visulization
+write.csv(mag.net.spearman.r.allr, file = "mag.net.spearman.r.allr.csv")
+
+#add metadata for network nodes
+mag.net.nodes.allr <- read.table("/media/public3/DY/MAGs/p_0.05/nodes.csv", header = TRUE,  sep = ",")
+rownames(mag.net.nodes.allr) <-mag.net.nodes.allr$Id 
+mag.net.nodes.allr <- merge(mag.net.nodes.allr, prevdf, by="row.names", all.x = TRUE)
+mag.net.nodes.allr$Row.names <- NULL
+
+mag.net.nodes.allr <- merge(mag.net.nodes.allr, mag.net.accum.ratio, by="Id")
+mag.net.nodes.allr$TotalAbundance <- NULL
+mag.net.nodes.allr$Label <- mag.net.nodes.allr$Family
+write.csv(mag.net.nodes.allr, file = "mag.net.nodes.allr.csv")
+
+#add metadata for network edges
+mag.net.edges.allr <- read.table("/media/public3/DY/MAGs/p_0.05/edges.csv", header = TRUE,  sep = ",")
+mag.net.edges.allr["spear.corr"] <- as.numeric(mag.net.edges.allr$Weight)
+mag.net.edges.allr$spear.corr[mag.net.edges.allr$spear.corr>0] <-"positive"
+mag.net.edges.allr$spear.corr[mag.net.edges.allr$spear.corr<0] <-"negative"
+write.csv(mag.net.edges.allr, file = "mag.net.edges.allr.csv", row.names = FALSE)
+
+
+#network for p__Actinobacteriota
+mag.net.Actinobacteriota.allr <- subset(mag.net.nodes.allr, Phylum %in% c("p__Actinobacteriota"))[,"Id"]
+
+mag.net.edges.Actinobacteriota.allr1 <- subset(mag.net.edges.allr, Source %in% mag.net.Actinobacteriota.allr)
+mag.net.edges.Actinobacteriota.allr2 <- subset(mag.net.edges.allr, Target %in% mag.net.Actinobacteriota.allr)
+mag.net.edges.Actinobacteriota.allr <- rbind(mag.net.edges.Actinobacteriota.allr1, mag.net.edges.Actinobacteriota.allr2)
+
+mag.net.nodes.Actinobacteriota.d134 <- unique(c(as.character(mag.net.edges.Actinobacteriota.allr$Source), 
+                                           as.character(mag.net.edges.Actinobacteriota.allr$Target)))
+mag.net.nodes.Actinobacteriota.d134 <- subset(mag.net.nodes.allr, Id %in% mag.net.nodes.Actinobacteriota.d134)
+
+write.csv(mag.net.nodes.Actinobacteriota.d134, file = "mag.net.nodes.Actinobacteriota.d134.csv", row.names = FALSE)
+write.csv(mag.net.edges.Actinobacteriota.allr, file = "mag.net.edges.Actinobacteriota.allr.csv", row.names = FALSE)
+
+
+###### MAG network at d134 ######
+mag.net.d334 <- mag.net[,c("SDZ_SK_d334","SDZ_SWH_d334","SDZ_YL_d334","SDZ_TP_d334","SDZ_ST_d334","SDZ_STL_d334")]
+mag.net.spearman.d334 <- psych::corr.test(t(mag.net.d334), method = "spearman", use="pairwise", adjust="fdr", alpha=0.05)
+
+#only consider MAG association with adjp < 0.05, no filtering on r value
+mag.net.spearman.r.d334 <- mag.net.spearman.d334$r
+mag.net.spearman.p.d334 <- mag.net.spearman.d334$p
+mag.net.spearman.r.d334[mag.net.spearman.p.d334 > 0.05|abs(mag.net.spearman.r.d334)==1|abs(mag.net.spearman.r.d334)<0.8] = 0
+
+###### Gephi visulization
+write.csv(mag.net.spearman.r.d334, file = "mag.net.spearman.r.d334.csv")
+
+#add metadata for network nodes -- mag.net.nodes.d334
+
+mag.net.accum.ratio.d334 <- as.data.frame(rowSums(mag.net.d334))
+names(mag.net.accum.ratio.d334)[1] <- "accum.ratio.abund.d334sample"
+mag.net.accum.ratio.d334["Id"] <- row.names(mag.net.accum.ratio.d334)
+
+mag.net.nodes.d334 <- read.table("/media/public3/DY/MAGs/d_334_r_0.4/nodes.csv", header = TRUE,  sep = ",")
+rownames(mag.net.nodes.d334) <-mag.net.nodes.d334$Id 
+mag.net.nodes.d334 <- merge(mag.net.nodes.d334, prevdf, by="row.names", all.x = TRUE)
+mag.net.nodes.d334$Row.names <- NULL
+
+mag.net.nodes.d334 <- merge(mag.net.nodes.d334, mag.net.accum.ratio.d334, by="Id")
+mag.net.nodes.d334$TotalAbundance <- NULL
+mag.net.nodes.d334$Label <- mag.net.nodes.d334$Family
+write.csv(mag.net.nodes.d334, file = "mag.net.nodes.d334.csv", row.names = FALSE)
+
+#add metadata for network edges
+mag.net.edges.d334 <- read.table("/media/public3/DY/MAGs/d_334_r_0.4/edges.csv", header = TRUE,  sep = ",")
+mag.net.edges.d334["spear.corr"] <- as.numeric(mag.net.edges.d334$Weight)
+mag.net.edges.d334$spear.corr[mag.net.edges.d334$spear.corr>0] <-"positive"
+mag.net.edges.d334$spear.corr[mag.net.edges.d334$spear.corr<0] <-"negative"
+mag.net.edges.d334$Weight <-abs(mag.net.edges.d334$Weight)
+write.csv(mag.net.edges.d334, file = "mag.net.edges.d334.csv", row.names = FALSE)
+
+
+#network for p__Actinobacteriota
+mag.net.Actinobacteriota.d334 <- subset(mag.net.nodes.d334, Phylum %in% c("p__Actinobacteriota"))[,"Id"]
+mag.net.edges.Actinobacteriota.d334.1 <- subset(mag.net.edges.d334, Source %in% mag.net.Actinobacteriota.d334)
+mag.net.edges.Actinobacteriota.d334.2 <- subset(mag.net.edges.d334, Target %in% mag.net.Actinobacteriota.d334)
+mag.net.edges.Actinobacteriota.d334 <- rbind(mag.net.edges.Actinobacteriota.d334.1, mag.net.edges.Actinobacteriota.d334.2)
+
+#
+mag.net.edges.Actinobacteriota.d334$Weight <- abs(mag.net.edges.Actinobacteriota.d334$Weight)
+
+mag.net.nodes.Actinobacteriota.d334 <- unique(c(as.character(mag.net.edges.Actinobacteriota.d334$Source), 
+                                                as.character(mag.net.edges.Actinobacteriota.d334$Target)))
+mag.net.nodes.Actinobacteriota.d334 <- subset(mag.net.nodes.d334, Id %in% mag.net.nodes.Actinobacteriota.d334)
+write.csv(mag.net.nodes.Actinobacteriota.d334, file = "mag.net.nodes.Actinobacteriota.d334.csv", row.names = FALSE)
+write.csv(mag.net.edges.Actinobacteriota.d334, file = "mag.net.edges.Actinobacteriota.d334.csv", row.names = FALSE)
+
+
+
+
+###### between sample similarity (335 MAG bray-curtis) ######
+
+#communites assembled from the same STP
+ps.density <- subset_samples(ps.ratio, Time %in% c("d134", "d231"))
+density.bray <- phyloseq::distance(ps.density, method = "bray")
+density.df <- melt(as.matrix(unlist(density.bray)))
+
+
+density.df["STP1"] <-reshape2::colsplit(density.df$Var1, pattern="_", c("SA1", "STP1","Time1"))["STP1"]
+density.df["STP2"] <-reshape2::colsplit(density.df$Var2, pattern="_", c("SA1", "STP2","Time1"))["STP2"]
+
+density.sameSTP.df <- subset(density.df,density.df$STP1 == density.df$STP2)
+density.sameSTP.df$value[density.sameSTP.df$value ==0] <-NA
+density.sameSTP.df <- na.omit(density.sameSTP.df)
+density.sameSTP.df["Type"] <- "same.starting.microbime"
+
+density.diffSTP.df <- subset(density.df,density.df$STP1 != density.df$STP2)
+density.diffSTP.df["Type"] <- "different.starting.microbimes" 
+
+
+density.df.plot <- rbind(density.sameSTP.df[,c("Type", "value")], density.diffSTP.df[,c("Type", "value")])
+density.df.plot$value <- 1-density.df.plot$value
+
+theme_set(theme_bw())
+ggplot(density.df.plot, aes(x=value, fill=Type, colour=Type)) + 
+  geom_density(alpha=.8)+
+  scale_fill_manual(values = c("#5bb733ff","#3592d4ff"))+
+  scale_color_manual(values = c("#5bb733ff","#3592d4ff"))+
+  labs(x="Between-community similarity quantified by β diversity", y= "Density")+
+  theme(legend.position="top",
+        axis.text.y = element_blank(),axis.ticks.y = element_blank()
+  )+
+  scale_x_continuous(limits=c(0, 1))+
+  geom_vline(aes(xintercept=median(1-density.sameSTP.df$value)), color="#3592d4ff")+
+  geom_vline(aes(xintercept=median(1-density.diffSTP.df$value)), color="#5bb733ff")
+
+#wilcoxon test
+wilcox.test(value ~ Type, data = density.df.plot, alterantive="less")
+
+
+###### 335 MAG simper test ######
+#differnt STP
+simper.df <- subset_samples(ps.count, Time %in% c("d231","d334"))
+simper.df <- as.data.frame(get_taxa(simper.df))
+simper.df <- t(simper.df)
+
+simper.df.metadata <- subset(samdf, Time %in% c("d231","d334"))
+simper.df.metadata$STP <- as.factor(simper.df.metadata$STP)
+
+#simper test
+sim.STP <- simper(simper.df, simper.df.metadata$STP)
+sim.STP.df <- do.call(rbind,summary(sim.STP, digits = 2))
+#
+sim.STP.df["variable"] <- row.names(sim.STP.df)
+sim.STP.df <- sim.STP.df[, c("variable", "cumsum")]
+sim.STP.df[,c("STP","MAG")] <-reshape2::colsplit(sim.STP.df[["variable"]], "\\.", c("STP","MAG"))
+sim.STP.df[,c("STP1","STP2")] <-reshape2::colsplit(sim.STP.df[["STP"]], "_", c("STP1","STP2"))
+
+#select most influential species species driving >50% differences between two communities assembled from different starting microbiomes 
+sim.STP.df2 <- subset(sim.STP.df, sim.STP.df$cumsum <=0.49)
+sim.STP.50variance.list <- unique(sim.STP.df2$MAG)
+
+View(subset(taxa.df, MAG %in% sim.STP.50variance.list))
+
+sim.diffSTP <- data.frame("MAG"=unique(sim.STP.50variance.list),
+                             "diffSTP.simper"="diffSTP.contributor")
+###### same STP
+simper.time.df <- as.data.frame(simper.df)
+simper.time.df["STP"] <- reshape2::colsplit(row.names(simper.time.df), "_", c("SA","STP","Time"))[2]
+
+sim.Time.list <- list()
+simper.df.metadata.list <- list()
+for (i in c("SK","ST","STL","SWH","TP", "YL")){
+  sim.Time.list[[i]] <- subset(simper.time.df, STP %in% i)
+  sim.Time.list[[i]]$STP <- NULL
+  simper.df.metadata.list[[i]] <- subset(simper.df.metadata, STP %in% i)
+  
+  sim.Time.list[[i]] <- simper(as.data.frame(sim.Time.list[[i]]), simper.df.metadata.list[[i]]$Time)
+  sim.Time.list[[i]] <- do.call(rbind,summary(sim.Time.list[[i]] , digits = 2))
+  sim.Time.list[[i]]["STP"] <- i
+  sim.Time.list[[i]] <- sim.Time.list[[i]][c(1:3),]
+}
+
+sim.sameSTP.variance.top3  <- do.call(rbind, sim.Time.list)
+sim.sameSTP.variance.top3["MAG"] <- reshape2::colsplit(row.names(sim.sameSTP.variance.top3), pattern="\\.", c("STP","Time","MAG"))[3]
+
+sim.sameSTP <- data.frame("MAG"=unique(sim.sameSTP.variance.top3$MAG),
+                          "sameSTP.simper"="sameSTP.contributor")
+
+
+######  MAG anivo ######
+
+###### 109 MAG anivo
+#anivo presence/absence
+anvio.taxa <- rownames(mag.net)
+anvio.df <- prune_taxa(anvio.taxa, ps.count)
+anvio.df <- subset_samples(anvio.df, Time %in% c("d0","d134","d231","d334"))
+anvio.df <- as.data.frame(get_taxa(anvio.df))
+#add STPpre
+anvio.df <-merge(anvio.df, mag.STPpre.df, by="row.names", all.x = TRUE)
+anvio.df <- anvio.df[,-1]
+#add MAG taxa
+taxa.temp <- prevdf[,-c(1:2)]
+taxa.temp["MAG"] <- row.names(taxa.temp)
+row.names(taxa.temp) <- NULL
+anvio.df <- merge(taxa.temp, anvio.df, by="MAG", all.y = TRUE)
+
+anvio.abund <- anvio.df                          
+#anvio.pre[9:32][anvio.pre[9:32]!=0] <-1
+anvio.abund <- anvio.abund[,-c(2,4,5,7,8)]
+write.csv(anvio.abund, file = "anvio.abund",row.names = FALSE)
+
+### merge anvio.df (count) info with simper test
+anvio.simper <- anvio.df
+anvio.simper <- merge(sim.diffSTP,  anvio.simper, by="MAG", all.y = TRUE)
+anvio.simper <- merge(sim.sameSTP,  anvio.simper, by="MAG", all.y = TRUE)
+
+
+write.csv(anvio.simper, file = "anvio.simper",row.names = FALSE)
+
+###### 335 MAG anivo
+
+anvio.simper.335MAGs <- subset_samples(ps.ratio, Time %in% c("d0","d134","d231","d334"))
+anvio.simper.335MAGs <- as.data.frame(get_taxa(anvio.simper.335MAGs))
+#add STP prevalence
+anvio.simper.335MAGs <-merge(mag.STPpre.df, anvio.simper.335MAGs, by="row.names", all.y = TRUE)
+anvio.simper.335MAGs$Row.names <- NULL
+#add simper result
+anvio.simper.335MAGs <- merge(sim.diffSTP,  anvio.simper.335MAGs, by="MAG", all.y = TRUE)
+anvio.simper.335MAGs <- merge(sim.sameSTP,  anvio.simper.335MAGs, by="MAG", all.y = TRUE)
+#add MAG taxa
+anvio.simper.335MAGs <- merge(taxa.temp, anvio.simper.335MAGs, by="MAG", all.y = TRUE)
+#add netwokr 109 MAG info
+anvio.simper.335MAGs["16S.elevated"] <- "No" 
+anvio.simper.335MAGs$network109MAGs[anvio.simper.335MAGs$MAG %in% anvio.df$MAG] <- "Elevated"
+
+write.csv(anvio.simper.335MAGs, file = "anvio.simper.335MAGs",row.names = FALSE)
+
+# 234 MAGs with STPpre >=3
+anvio.simper.234MAGs.STPpre3 <- subset(anvio.simper.335MAGs, !STPpre %in% c("0", "1"))
+anvio.simper.234MAGs.STPpre3[,c("Domain","Class","Order","Genus","Species")]<- NULL
+
+write.csv(anvio.simper.234MAGs.STPpre3, file = "anvio.simper.234MAGs.STPpre3",row.names = FALSE)
+
+
